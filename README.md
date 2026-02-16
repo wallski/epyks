@@ -30,7 +30,9 @@ Epyks is a lightweight, secure chat platform built from scratch. No email requir
 **Steps:**
 1. Open `epyks/epyks.sln`
 2. Build solution (x64 Release recommended)
-3. Run `epyks.Server.exe` first, then `epyks.Client.exe`
+3. You need radmin or change the code yourself if you want to port forward.
+4. Create a network with radmin and use that ip.
+5. Run `epyks.Server.exe` first, then `epyks.Client.exe`
 
 ## Usage
 
