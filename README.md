@@ -1,6 +1,8 @@
 # Epyks
 
-*Secure chat application with friends, DMs, and session-based authentication.*
+*I have no idea what I'm doing*
+
+*Secure (maybe? prolly not) chat application with friends, DMs, and session-based authentication.*
 
 ![C++](https://img.shields.io/badge/C++-17-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
@@ -51,4 +53,4 @@ Epyks is a lightweight, secure chat platform built from scratch. No email requir
 
 ## License
 
-MIT — do whatever you want idgaf.
+MIT — do whatever you want.
