@@ -446,8 +446,17 @@ int main(int, char**) {
     if (!gui.Initialize()) return 1;
 
     Database database;
-    CreateDirectoryA("C:\\Users\\elias\\Desktop\\epyks_data", nullptr);
-    std::string dbPath = "C:\\Users\\elias\\Desktop\\epyks_data\\epyks_chat.db";
+
+
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+    std::string exeDir = exePath;
+    exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
+
+    std::string dataDir = exeDir + "\\epyks_data";
+    std::string dbPath = dataDir + "\\epyks_chat.db";
+
+    CreateDirectoryA(dataDir.c_str(), nullptr);
 
     if (!database.Open(dbPath)) {
         gui.AddLog("[Error] Database failed: " + dbPath);
