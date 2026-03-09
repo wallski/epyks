@@ -55,6 +55,7 @@ Use Radmin if you don't wanna port forward.
 
 ## Known bugs
 - You can add yourself
+- If a group is selected you can't switch to a friend dm unless you click on the main chat and then go to the dm
 
 ## Planned
 - Unfriend
