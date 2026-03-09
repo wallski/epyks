@@ -443,9 +443,16 @@ public:
             }
             else if (packet.type == epyks::PacketType::GROUP_MESSAGE) {
                 epyks::GroupMessage req;
+                
                 auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
                 if (req.Deserialize(bytes) && db) {
                     auto members = db->GetGroupMembers(req.group_id);
+
+                    epyks::GroupMessage forward;
+                    forward.group_id = req.group_id;
+                    forward.content = username + ": " + req.content;
+                    auto forwardBytes = forward.Serialize();
+
 
                     std::lock_guard<std::mutex> lock(clientsMutex);
                     for (const auto& member : members) {
@@ -453,7 +460,7 @@ public:
                             if (c.username == member) {
                                 epyks::Packet notify;
                                 notify.type = epyks::PacketType::GROUP_MESSAGE;
-                                notify.data = "[Group " + std::to_string(req.group_id) + "] " + username + ": " + req.content;
+                                notify.data = std::string(forwardBytes.begin(), forwardBytes.end());
                                 SendTo(c.socket, notify);
                                 break;
                             }

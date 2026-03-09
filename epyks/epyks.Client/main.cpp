@@ -2,24 +2,24 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#include <winsock2.h>
-#include <windows.h>
-#include <ws2tcpip.h>
-#include <d3d11.h>
-#include <tchar.h>
 #include "imgui.h"
-#include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
-#include <string>
-#include <vector>
-#include <thread>
-#include <atomic>
-#include <mutex>
-#include <map>
-#include <fstream>
-#include <filesystem>
+#include "imgui_impl_win32.h"
 #include "Protocol/Packet.h"
-
+#include <atomic>
+#include <d3d11.h>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <mutex>
+#include <string>
+#include <tchar.h>
+#include <thread>
+#include <vector>
+#include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <sstream>
 #pragma comment(lib, "ws2_32.lib")
 
 
@@ -75,6 +75,12 @@ struct DMChat {
     std::vector<std::string> messages;
 };
 
+struct GroupChat {
+    std::string groupName;
+    std::vector<std::string> messages;
+    int ID;
+};
+
 class ChatClient {
 public:
     SOCKET sock = INVALID_SOCKET;
@@ -86,6 +92,8 @@ public:
     std::vector<Friend> friends;
     std::vector<std::string> friendRequests;
     std::map<std::string, DMChat> dmChats;
+    std::map<int, GroupChat> groupChats;
+    std::vector<std::pair<int, std::string>> availableGroups;
     std::mutex friendsMutex;
 
 
@@ -217,6 +225,40 @@ public:
                     }
                 }
             }
+            else if (packet.type == epyks::PacketType::GROUP_MESSAGE) {
+                epyks::GroupMessage grpms;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+
+                if (grpms.Deserialize(bytes)) {
+                    groupChats[grpms.group_id].messages.push_back(grpms.content);
+                }
+            }
+            else if (packet.type == epyks::PacketType::CREATE_GROUP) {
+                messages.push_back("*** " + packet.data + " ***");
+            }
+            
+            else if (packet.type == epyks::PacketType::LIST_GROUPS) {
+                availableGroups.clear();
+                std::string data = packet.data;
+                std::stringstream ss(data);
+                std::string token;
+                while (std::getline(ss, token, ',')) {
+                    if (token.empty()) continue;
+                    size_t colon = token.find(':');
+
+                    if (colon != std::string::npos) {
+                        int id = std::stoi(token.substr(0, colon));
+                        std::string name = token.substr(colon + 1);
+                        availableGroups.push_back({ id, name });
+                        groupChats[id].groupName = name;
+                        groupChats[id].ID = id;
+                    }
+
+                }
+                
+            }
+
+        
         }
         connected = false;
     }
@@ -251,6 +293,8 @@ public:
         send(sock, (char*)data.data(), len, 0);
     }
 
+
+    //friends
     void SendFriendRequest(const std::string& target) {
         if (!connected) return;
         epyks::FriendRequest req;
@@ -287,11 +331,21 @@ public:
             target + " wants to add you as friend");
         if (it != friendRequests.end()) friendRequests.erase(it);
     }
-
+    //private
     void RequestFriendList() {
         if (!connected) return;
         epyks::Packet packet;
         packet.type = epyks::PacketType::FRIEND_LIST;
+        auto data = packet.Serialize();
+        uint32_t len = (uint32_t)data.size();
+        send(sock, (char*)&len, 4, 0);
+        send(sock, (char*)data.data(), len, 0);
+    }
+
+    void SendListGroups() {
+        if (!connected) return;
+        epyks::Packet packet;
+        packet.type = epyks::PacketType::LIST_GROUPS;
         auto data = packet.Serialize();
         uint32_t len = (uint32_t)data.size();
         send(sock, (char*)&len, 4, 0);
@@ -303,6 +357,70 @@ public:
         out = messages;
     }
 
+    //groups
+    void SendCreateGroup(const std::string& groupName) {
+        if (!connected) return;
+        epyks::CreateGroup cg;
+        cg.group_name = groupName;
+        auto pmBytes = cg.Serialize();
+        epyks::Packet packet;
+        packet.type = epyks::PacketType::CREATE_GROUP;
+        packet.data = std::string(pmBytes.begin(), pmBytes.end());
+        packet.timestamp = GetTickCount64();
+        auto data = packet.Serialize();
+        uint32_t len = (uint32_t)data.size();
+        send(sock, (char*)&len, 4, 0);
+        send(sock, (char*)data.data(), len, 0);
+    }
+
+    void SendJoinGroup(int groupId) {
+        if (!connected) return;
+        epyks::JoinGroup jg;
+        jg.group_id = groupId;
+        auto pmBytes = jg.Serialize();
+        epyks::Packet packet;
+        packet.type = epyks::PacketType::JOIN_GROUP;
+        packet.data = std::string(pmBytes.begin(), pmBytes.end());
+        packet.timestamp = GetTickCount64();
+        auto data = packet.Serialize();
+        uint32_t len = (uint32_t)data.size();
+        send(sock, (char*)&len, 4, 0);
+        send(sock, (char*)data.data(), len, 0);
+    }
+
+    void SendLeaveGroup(int groupId) {
+        if (!connected) return;
+        epyks::LeaveGroup lg;
+        lg.group_id = groupId;
+        auto pmBytes = lg.Serialize();
+        epyks::Packet packet;
+        packet.type = epyks::PacketType::LEAVE_GROUP;
+        packet.data = std::string(pmBytes.begin(), pmBytes.end());
+        packet.timestamp = GetTickCount64();
+        auto data = packet.Serialize();
+        uint32_t len = (uint32_t)data.size();
+        send(sock, (char*)&len, 4, 0);
+        send(sock, (char*)data.data(), len, 0);
+    }
+
+    void SendGroupMessage(int groupId,const std::string& message) {
+        if (!connected) return;
+        epyks::GroupMessage gm;
+        gm.group_id = groupId;
+        gm.content = message;
+        auto pmBytes = gm.Serialize();
+        epyks::Packet packet;
+        packet.type = epyks::PacketType::GROUP_MESSAGE;
+        packet.data = std::string(pmBytes.begin(), pmBytes.end());
+        packet.timestamp = GetTickCount64();
+        auto data = packet.Serialize();
+        uint32_t len = (uint32_t)data.size();
+        send(sock, (char*)&len, 4, 0);
+        send(sock, (char*)data.data(), len, 0);
+    }
+
+
+    //conection
     bool IsConnected() { return connected; }
 
     void Disconnect() {
@@ -368,7 +486,7 @@ int main(int, char**) {
 
     ChatClient client;
 
-
+    char groupInputBuf[256] = {};
     bool showLogin = true;
     bool showRegister = false;
     bool isConnecting = false;
@@ -382,14 +500,20 @@ int main(int, char**) {
     char regConfirm[64] = "";
     bool rememberMe = true;
 
+
+
     char inputBuf[256] = "";
     char addFriendBuf[64] = "";
+    char createGroupBuf[64] = "";
     char dmInputBuf[256] = "";
     std::vector<std::string> displayMessages;
     std::string currentDM;
+    int currentGroupId = -1;
     bool showSettings = false;
     bool showAddFriend = false;
     bool showFriendRequests = false;
+    bool showCreateGroup = false;
+    bool showBrowseGroups = false;
 
     bool done = false;
     while (!done) {
@@ -645,6 +769,11 @@ int main(int, char**) {
                     if (ImGui::MenuItem("Colors...")) showSettings = true;
                     ImGui::EndMenu();
                 }
+                if (ImGui::BeginMenu("Groups")) {
+                    if (ImGui::MenuItem("Create Group...")) showCreateGroup = true;
+                    if (ImGui::MenuItem("Browse Groups...")) showBrowseGroups = true;
+                    ImGui::EndMenu();
+                }
                 ImGui::EndMenuBar();
             }
 
@@ -654,6 +783,7 @@ int main(int, char**) {
 
             if (ImGui::Button("Main Chat", ImVec2(-1, 30))) {
                 currentDM = "";
+                currentGroupId = -1;
             }
 
             ImGui::Separator();
@@ -676,15 +806,77 @@ int main(int, char**) {
                     ImGui::PopStyleColor();
                 }
             }
+           
+            
+            ImGui::Separator();
+            ImGui::Text("Groups");
+            ImGui::Separator();
 
+            for (auto& g : client.groupChats) {
+                if (ImGui::Button(g.second.groupName.c_str(), ImVec2(-1, 25))) {
+                    currentGroupId = g.first;
+                    currentDM = "";
+                }
+            }
             ImGui::EndChild();
 
             ImGui::SameLine();
 
 
             float chatWidth = viewportSize.x - sidebarWidth - 20;
+            
+            if (currentGroupId != -1) {
 
-            if (currentDM.empty()) {
+                ImGui::BeginChild("GroupArea", ImVec2(chatWidth, -30), false);
+
+
+                float chatHeight = ImGui::GetContentRegionAvail().y - 40;
+                ImGui::BeginChild("GroupHistory", ImVec2(0, chatHeight), true);
+                for (size_t i = 0; i < client.groupChats[currentGroupId].messages.size(); i++) {
+                    auto& m = client.groupChats[currentGroupId].messages[i];
+                    ImVec4 color;
+                    if (m.find("***") == 0) color = config.joinLeaveColor;
+                    else if (m.find("System:") == 0) color = config.systemColor;
+                    else if (m.find("[" + client.username + "]:") != std::string::npos)
+                        color = config.ownMessageColor;
+                    else color = config.otherMessageColor;
+
+                    ImGui::PushStyleColor(ImGuiCol_Text, color);
+                    ImGui::Selectable(m.c_str(), false);
+                    if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(1)) {
+                        ImGui::SetClipboardText(m.c_str());
+                    }
+                    ImGui::PopStyleColor();
+                }
+                if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+                    ImGui::SetScrollHereY(1.0f);
+                }
+                ImGui::EndChild();
+
+                ImGui::Separator();
+
+                static bool refocusInput = false;
+                if (refocusInput) {
+                    ImGui::SetKeyboardFocusHere();
+                    refocusInput = false;
+                }
+
+                if (ImGui::InputText("##groupinput", groupInputBuf, 256, ImGuiInputTextFlags_EnterReturnsTrue)) {
+                    client.SendGroupMessage(currentGroupId, groupInputBuf);
+                    groupInputBuf[0] = '\0';
+                    refocusInput = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Send")) {
+                    client.SendGroupMessage(currentGroupId, groupInputBuf);
+                    groupInputBuf[0] = '\0';
+                    refocusInput = true;
+                }
+
+                ImGui::EndChild();
+
+            }
+            else if (currentDM.empty()) {
 
                 ImGui::BeginChild("ChatArea", ImVec2(chatWidth, -30), false);
 
@@ -837,6 +1029,52 @@ int main(int, char**) {
                 ImGui::EndPopup();
             }
 
+            if (showCreateGroup) ImGui::OpenPopup("Create Group");
+            ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+            if (ImGui::BeginPopupModal("Create Group", &showCreateGroup, ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::Text("Group name:");
+                ImGui::InputText("##creategroup", createGroupBuf, 64);
+                if (ImGui::Button("Create")) {
+                    client.SendCreateGroup(createGroupBuf);
+                    createGroupBuf[0] = '\0';
+                    showCreateGroup = false;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel")) {
+                    showCreateGroup = false;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
+
+            if (showBrowseGroups) {
+                client.SendListGroups();
+                showBrowseGroups = false;
+                ImGui::OpenPopup("Browse Groups");
+            }
+            ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+            if (ImGui::BeginPopupModal("Browse Groups", &showBrowseGroups, ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::Text("Available Groups:");
+                ImGui::Separator();
+
+                for (auto& g : client.availableGroups) {
+                    ImGui::Text("%s", g.second.c_str());
+                    ImGui::SameLine();
+                    if (ImGui::Button(("Join##" + std::to_string(g.first)).c_str())) {
+                        client.SendJoinGroup(g.first);
+                        showBrowseGroups = false;
+                        ImGui::CloseCurrentPopup();
+                    }
+                }
+
+
+                if (ImGui::Button("Close")) {
+                    showBrowseGroups = false;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
 
             if (showSettings) {
                 ImGui::OpenPopup("Settings");
