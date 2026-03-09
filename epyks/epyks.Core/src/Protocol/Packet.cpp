@@ -252,6 +252,73 @@ namespace epyks {
         session_token.assign(bytes.begin() + 9 + errLen, bytes.end());
         return true;
     }
+    //groups
+    std::vector<uint8_t> CreateGroup::Serialize() const {
+        std::vector<uint8_t> result;
+        uint32_t len = (uint32_t)group_name.size();
+        result.resize(4);
+        std::memcpy(result.data(), &len, 4);
+        result.insert(result.end(), group_name.begin(), group_name.end());
+        return result;
+    }
+
+    bool CreateGroup::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 4) return false;
+        uint32_t len = 0;
+        std::memcpy(&len, bytes.data(), 4);
+        if (bytes.size() != 4 + len) return false;
+        group_name.assign(bytes.begin() + 4, bytes.end());
+        return true;
+    }
+  
+    std::vector<uint8_t> JoinGroup::Serialize() const {
+        std::vector<uint8_t> result;
+        result.resize(4);
+        std::memcpy(result.data(), &group_id, 4);
+        return result;
+    }
+
+    bool JoinGroup::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() != 4) return false;
+        std::memcpy(&group_id, bytes.data(), 4);
+        return true;
+	}
+
+    std::vector<uint8_t> LeaveGroup::Serialize() const {
+        std::vector<uint8_t> result;
+        result.resize(4);
+        std::memcpy(result.data(), &group_id, 4);
+        return result;
+	}
+
+    bool LeaveGroup::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() != 4) return false;
+        std::memcpy(&group_id, bytes.data(), 4);
+		return true;
+	}
+
+    std::vector<uint8_t> GroupMessage::Serialize() const {
+        std::vector<uint8_t> result;
+        uint32_t id = (uint32_t)group_id;
+        uint32_t contentLen = (uint32_t)content.size();
+        result.resize(8);
+        std::memcpy(result.data(), &id, 4);
+        std::memcpy(result.data() + 4, &contentLen, 4);
+        result.insert(result.end(), content.begin(), content.end());
+        return result;
+    }
+
+    bool GroupMessage::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 8) return false;
+        uint32_t id = 0, contentLen = 0;
+        std::memcpy(&id, bytes.data(), 4);
+        std::memcpy(&contentLen, bytes.data() + 4, 4);
+        if (bytes.size() != 8 + contentLen) return false;
+        group_id = id;
+        content.assign(bytes.begin() + 8, bytes.end());
+        return true;
+	}
+
 
     std::vector<uint8_t> TokenLoginRequest::Serialize() const {
         std::vector<uint8_t> result;

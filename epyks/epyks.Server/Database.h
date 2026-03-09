@@ -45,6 +45,14 @@ public:
     void SavePrivateMessage(const std::string& from, const std::string& to, const std::string& message, uint64_t timestamp);
     std::vector<ChatMessage> GetPrivateMessages(const std::string& user1, const std::string& user2, int limit = 100);
 
+    //groups
+    bool CreateGroup(const std::string& name, const std::string& owner);
+    bool JoinGroup(const std::string& username, int groupId);
+    std::vector<std::string> GetGroupMembers(int groupId);
+    bool LeaveGroup(const std::string& username, int groupId);
+    int GetGroupByName(const std::string& groupName);
+    std::vector<std::pair<int, std::string>> GetAllGroups();
+
 private:
     bool Execute(const std::string& sql);
 };

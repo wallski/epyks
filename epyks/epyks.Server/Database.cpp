@@ -49,6 +49,20 @@ bool Database::Open(const std::string& path) {
         "timestamp INTEGER);"
     );
 
+    Execute(
+        "CREATE TABLE IF NOT EXISTS groups ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "name TEXT,"
+        "owner TEXT);"
+	);
+
+    Execute(
+        "CREATE TABLE IF NOT EXISTS group_members ("
+        "group_id INTEGER,"
+        "username TEXT,"
+        "UNIQUE(group_id, username));"
+	);
+
     return true;
 }
 
@@ -70,7 +84,7 @@ bool Database::Execute(const std::string& sql) {
 }
 
 
-
+//chat shit
 void Database::ClearChatHistory() {
     Execute("DELETE FROM chat_messages;");
 }
@@ -114,7 +128,7 @@ std::vector<ChatMessage> Database::GetRecentMessages(int limit) {
 }
 
 
-
+//security and accounts
 std::string Database::GenerateSalt() {
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -239,7 +253,7 @@ void Database::ClearSessionToken(const std::string& username) {
 }
 
 
-
+//friends
 bool Database::CreateFriendRequest(const std::string& from, const std::string& to) {
 
     sqlite3_stmt* stmt;
@@ -311,6 +325,86 @@ bool Database::AreFriends(const std::string& u1, const std::string& u2) {
 }
 
 
+//groups
+bool Database::CreateGroup(const std::string& name, const std::string& owner) {
+    sqlite3_stmt* stmt;
+    sqlite3_prepare_v2(db,
+         "INSERT INTO groups(group_name, created_by) VALUES(?, ?)",
+         -1, & stmt, nullptr);
+
+    sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, owner.c_str(), -1, SQLITE_TRANSIENT);
+
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+bool Database::JoinGroup(const std::string& username, int groupId) {
+	sqlite3_stmt* stmt;
+    sqlite3_prepare_v2(db,
+         "INSERT INTO group_members(group_id, username) VALUES(?, ?)",
+		-1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, groupId);
+    sqlite3_bind_text(stmt, 2, username.c_str(), -1, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+	return ok;
+}
+
+std::vector<std::string> Database::GetGroupMembers(int groupId) {
+	sqlite3_stmt* stmt;
+    sqlite3_prepare_v2(db,
+         "SELECT username FROM group_members WHERE group_id=?",
+        -1, &stmt, nullptr);
+	sqlite3_bind_int(stmt, 1, groupId);
+    std::vector<std::string> members;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        members.emplace_back((const char*)sqlite3_column_text(stmt, 0));
+    }
+	sqlite3_finalize(stmt);
+	return members;
+}
+
+bool Database::LeaveGroup(const std::string& username, int groupId) {
+	sqlite3_stmt* stmt;
+    sqlite3_prepare_v2(db,
+         "DELETE FROM group_members WHERE group_id=? AND username=?",
+		-1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, groupId);
+    sqlite3_bind_text(stmt, 2, username.c_str(), -1, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+	sqlite3_finalize(stmt);
+	return ok;
+}
+
+int Database::GetGroupByName(const std::string& groupName) {
+    sqlite3_stmt* stmt;
+    sqlite3_prepare_v2(db,
+        "SELECT id FROM groups WHERE name=?",
+        -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, groupName.c_str(), -1, SQLITE_TRANSIENT);
+    int groupId = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        groupId = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return groupId;
+}
+std::vector<std::pair<int, std::string>> Database::GetAllGroups() {
+    sqlite3_stmt* stmt;
+    sqlite3_prepare_v2(db,
+        "SELECT id, name FROM groups",
+        -1, &stmt, nullptr);
+    std::vector<std::pair<int, std::string>> results;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        results.emplace_back(sqlite3_column_int(stmt, 0), (const char*)sqlite3_column_text(stmt, 1));
+    }
+    sqlite3_finalize(stmt);
+    return results;
+}
+
+//private messages
 
 void Database::SavePrivateMessage(const std::string& from, const std::string& to,
     const std::string& msg, uint64_t ts) {

@@ -30,6 +30,12 @@ namespace epyks {
         bool Deserialize(const std::vector<uint8_t>& bytes);
     };
 
+    struct FriendList {
+        std::vector<std::string> usernames;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+	};
+
     struct FriendRequest {
         std::string target_username;
 
@@ -53,12 +59,32 @@ namespace epyks {
         bool Deserialize(const std::vector<uint8_t>& bytes);
     };
 
-    struct FriendList {
-        std::vector<std::string> usernames;
+	struct CreateGroup {
+		std::string group_name;
+        std::vector<uint8_t> Serialize() const;
+		bool Deserialize(const std::vector<uint8_t>& bytes);
+	};
 
+    struct LeaveGroup{
+        int group_id;
         std::vector<uint8_t> Serialize() const;
         bool Deserialize(const std::vector<uint8_t>& bytes);
-    };
+	};
+
+    struct JoinGroup{
+        int group_id;
+        std::vector<uint8_t> Serialize() const;
+		bool Deserialize(const std::vector<uint8_t>& bytes);
+	};
+
+    struct GroupMessage {
+        int group_id;
+        std::string content;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+	};
+
+
 
     // Packet type constants
     namespace PacketType {
@@ -82,6 +108,13 @@ namespace epyks {
         constexpr uint32_t REGISTER_RESPONSE = 31;
         constexpr uint32_t LOGIN = 32;
         constexpr uint32_t LOGIN_RESPONSE = 33;
+
+        //groups
+		constexpr uint32_t CREATE_GROUP = 40;
+		constexpr uint32_t JOIN_GROUP = 41;
+		constexpr uint32_t LEAVE_GROUP = 42;
+        constexpr uint32_t GROUP_MESSAGE = 43;
+        constexpr uint32_t LIST_GROUPS = 44;
     }
 
     struct RegisterRequest {

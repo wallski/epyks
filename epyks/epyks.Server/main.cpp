@@ -384,6 +384,95 @@ public:
                     SendTo(sock, response);
                 }
             }
+            else if (packet.type == epyks::PacketType::CREATE_GROUP) {
+                epyks::CreateGroup req;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes) && db) {
+                    if (db->CreateGroup(req.group_name, username)) {
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::CREATE_GROUP;
+                        notify.data = "Group '" + req.group_name + "' created successfully";
+                        SendTo(sock, notify);
+                        if (gui) gui->AddLog("[" + username + "] created group [" + req.group_name + "]");
+                    }
+                    else {
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::CREATE_GROUP;
+                        notify.data = "Failed to create group '" + req.group_name + "'";
+                        SendTo(sock, notify);
+                    }
+                }
+			}
+            else if (packet.type == epyks::PacketType::JOIN_GROUP) {
+                epyks::JoinGroup req;
+				auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes) && db) {
+                    if (db->JoinGroup(username, req.group_id)) {
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::JOIN_GROUP;
+                        notify.data = "Group joined successfully";
+                        SendTo(sock, notify);
+                        if (gui) gui->AddLog("[" + username + "] joined the group");
+                    }
+                    else {
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::JOIN_GROUP;
+                        notify.data = "Failed to join group";
+                        SendTo(sock, notify);
+                    }
+                }
+            }
+            else if (packet.type == epyks::PacketType::LEAVE_GROUP) {
+                epyks::LeaveGroup req;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes) && db) {
+                    if (db->LeaveGroup(username, req.group_id)) {
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::LEAVE_GROUP;
+                        notify.data = "Left Group successfully";
+                        SendTo(sock, notify);
+                        if (gui) gui->AddLog("[" + username + "] left the group");
+                    }
+                    else {
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::LEAVE_GROUP;
+                        notify.data = "Failed to leave group";
+                        SendTo(sock, notify);
+                    }
+                }
+            }
+            else if (packet.type == epyks::PacketType::GROUP_MESSAGE) {
+                epyks::GroupMessage req;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes) && db) {
+                    auto members = db->GetGroupMembers(req.group_id);
+
+                    std::lock_guard<std::mutex> lock(clientsMutex);
+                    for (const auto& member : members) {
+                        for (auto& c : clients) {
+                            if (c.username == member) {
+                                epyks::Packet notify;
+                                notify.type = epyks::PacketType::GROUP_MESSAGE;
+                                notify.data = "[Group " + std::to_string(req.group_id) + "] " + username + ": " + req.content;
+                                SendTo(c.socket, notify);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            else if (packet.type == epyks::PacketType::LIST_GROUPS) {
+                auto list = db->GetAllGroups();
+                std::string result;
+                for (auto& c : list) {
+                    result += std::to_string(c.first) + ":" + c.second + ",";
+                }
+                epyks::Packet notify;
+                notify.type = epyks::PacketType::LIST_GROUPS;
+                notify.data = result;
+                SendTo(sock, notify);
+
+            }
         }
 
 
