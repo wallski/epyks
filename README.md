@@ -1,7 +1,7 @@
 # Epyks
 *skype backwards. because skype is dead.*
 
-*Chat application with friends, DMs, groups, and session-based authentication.*
+Chat application with friends, DMs, groups, and session-based authentication.
 
 ![C++](https://img.shields.io/badge/C++-17-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
@@ -30,8 +30,7 @@ Epyks is a lightweight chat platform built from scratch in C++. No email require
 2. Build solution (x64 Release recommended)
 3. Run `epyks.Server.exe` first, then `epyks.Client.exe`
 
-**Connectivity:**
-Use Radmin if you don't wanna port forward.
+**Connectivity:** Use [Radmin](https://www.radmin-vpn.com) or [Tailscale](https://tailscale.com) if you don't want to port forward.
 
 ## Usage
 **Server:**
@@ -53,20 +52,20 @@ Use Radmin if you don't wanna port forward.
 - Database: `epyks_data/epyks_chat.db`
 - Note: `std::hash` is used for password hashing — not cryptographically ideal, upgrade to bcrypt/Argon2 for production use
 
-## Known bugs
-- You can add yourself
-- If a group is selected you can't switch to a friend dm unless you click on the main chat and then go to the dm
+## Known Bugs
+- You can add yourself as a friend
+- If a group is selected you can't switch to a DM without clicking Main Chat first
 
 ## Planned
 - Unfriend
-- block users
+- Block users
 - Passwords for groups
 - Voice chat
 - Group admin and kick functionality
 - Password recovery
 
-## Not planed
-- Cross-platform support (Linux/Mac). WHY? because i got too much cancer doing this for windows and I don't hate myself that much.
+## Not Planned
+- Cross-platform support (Linux/Mac). Why? Too much cancer. I don't hate myself that much.
 
 ## License
 MIT — do whatever you want.
