@@ -1,7 +1,7 @@
 # Epyks
 *skype backwards. because skype is dead.*
 
-*Secure (maybe? prolly not) chat application with friends, DMs, groups, and session-based authentication.*
+*Chat application with friends, DMs, groups, and session-based authentication.*
 
 ![C++](https://img.shields.io/badge/C++-17-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
