@@ -396,6 +396,7 @@ public:
                         if (gui) gui->AddLog("[" + username + "] created group [" + req.group_name + "]");
                     }
                     else {
+                        if (gui) gui->AddLog("[DEBUG] CreateGroup failed - name: " + req.group_name + " owner: " + username);
                         epyks::Packet notify;
                         notify.type = epyks::PacketType::CREATE_GROUP;
                         notify.data = "Failed to create group '" + req.group_name + "'";
@@ -537,7 +538,7 @@ public:
     }
 };
 
-int main(int, char**) {
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     ServerGUI gui;
     if (!gui.Initialize()) return 1;
 

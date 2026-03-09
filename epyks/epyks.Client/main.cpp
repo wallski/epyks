@@ -459,7 +459,7 @@ struct AppConfig {
     }
 };
 
-int main(int, char**) {
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     WNDCLASSEX wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, _T("Epyks"), nullptr };
     RegisterClassEx(&wc);
     HWND hwnd = CreateWindow(wc.lpszClassName, _T("Epyks Chat"), WS_OVERLAPPEDWINDOW, 100, 100, 1000, 700, nullptr, nullptr, wc.hInstance, nullptr);

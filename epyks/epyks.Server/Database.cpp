@@ -50,7 +50,7 @@ bool Database::Open(const std::string& path) {
     );
 
     Execute(
-        "CREATE TABLE IF NOT EXISTS groups ("
+        "CREATE TABLE IF NOT EXISTS chat_groups ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "name TEXT,"
         "owner TEXT);"
@@ -329,7 +329,7 @@ bool Database::AreFriends(const std::string& u1, const std::string& u2) {
 bool Database::CreateGroup(const std::string& name, const std::string& owner) {
     sqlite3_stmt* stmt;
     sqlite3_prepare_v2(db,
-         "INSERT INTO groups(group_name, created_by) VALUES(?, ?)",
+         "INSERT INTO chat_groups(name, owner) VALUES(?, ?)",
          -1, & stmt, nullptr);
 
     sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
@@ -381,7 +381,7 @@ bool Database::LeaveGroup(const std::string& username, int groupId) {
 int Database::GetGroupByName(const std::string& groupName) {
     sqlite3_stmt* stmt;
     sqlite3_prepare_v2(db,
-        "SELECT id FROM groups WHERE name=?",
+        "SELECT id FROM chat_groups WHERE name=?",
         -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, groupName.c_str(), -1, SQLITE_TRANSIENT);
     int groupId = -1;
@@ -394,7 +394,7 @@ int Database::GetGroupByName(const std::string& groupName) {
 std::vector<std::pair<int, std::string>> Database::GetAllGroups() {
     sqlite3_stmt* stmt;
     sqlite3_prepare_v2(db,
-        "SELECT id, name FROM groups",
+        "SELECT id, name FROM chat_groups",
         -1, &stmt, nullptr);
     std::vector<std::pair<int, std::string>> results;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
