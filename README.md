@@ -53,7 +53,12 @@ Use Radmin if you don't wanna port forward.
 - Database: `epyks_data/epyks_chat.db`
 - Note: `std::hash` is used for password hashing — not cryptographically ideal, upgrade to bcrypt/Argon2 for production use
 
+## Known bugs
+- You can add yourself
+
 ## Planned
+- Unfriend
+- block users
 - Passwords for groups
 - Voice chat
 - Group admin and kick functionality
