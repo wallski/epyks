@@ -70,8 +70,8 @@ private:
     ServerConfig config;
     std::vector<std::string> logs;
     std::mutex logMutex;
-    bool doStart = false;
-    bool doStop = false;
+    std::atomic<bool> doStart = false;
+    std::atomic<bool> doStop = false;
     bool serverRunning = false;
     bool showSettings = false;
     bool autoScroll = true;
