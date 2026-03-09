@@ -1,41 +1,39 @@
 # Epyks
+*skype backwards. because skype is dead.*
 
-*I have no idea what I'm doing*
-
-*Secure (maybe? prolly not) chat application with friends, DMs, and session-based authentication.*
+*Secure (maybe? prolly not) chat application with friends, DMs, groups, and session-based authentication.*
 
 ![C++](https://img.shields.io/badge/C++-17-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ## Overview
-
-Epyks is a lightweight, secure chat platform built from scratch. No email required, no AI verification—just username-based authentication with proper password hashing and persistent sessions.
+Epyks is a lightweight chat platform built from scratch in C++. No email required, no AI verification — just username-based authentication with proper password hashing and persistent sessions. Built to actually understand how networking, packets, and threading work.
 
 ## Features
-
 - **Secure Authentication** — Passwords hashed with salt (10k iterations)
-- **Session Tokens** — "Remember me" functionality, auto-login on restart  
+- **Session Tokens** — "Remember me" functionality, auto-login on restart
 - **Friend System** — Send/accept friend requests
-- **Private Messaging** — DMs between mutual friends
+- **Private Messaging** — DMs between mutual friends only
+- **Group Chats** — Create groups, invite friends, chat together
+- **Global Chat** — Main lobby for everyone connected to the server
 - **Persistent History** — SQLite database for messages and accounts
-- **Dogshit UI** — ImGui-based interface for both client and server (no idea what I'm doing this looks dogshit)
-- **Private Messaging** — A global main chat for everyone connected to the server.
+- **Custom Binary Protocol** — Hand-rolled packet serialization, no third party networking libs
+- **Dogshit UI** — ImGui-based interface for both client and server (working on it)
 
 ## Building
-
 **Requirements:**
 - Visual Studio 2022 (C++17)
-- Windows SDK
+- Windows only for now (DX11 + Win32)
 
 **Steps:**
 1. Open `epyks/epyks.sln`
 2. Build solution (x64 Release recommended)
-3. You need radmin or change the code yourself if you want to port forward.
-4. Create a network with radmin and use that ip.
-5. Run `epyks.Server.exe` first, then `epyks.Client.exe`
+3. Run `epyks.Server.exe` first, then `epyks.Client.exe`
+
+**Connectivity:**
+Use Radmin if you don't wanna port forward.
 
 ## Usage
-
 **Server:**
 - Default port: 9001
 - Database auto-created on first run
@@ -44,15 +42,22 @@ Epyks is a lightweight, secure chat platform built from scratch. No email requir
 **Client:**
 - Register with username + password (min 3/4 chars)
 - Login with credentials or auto-login via saved session
-- Add friends via username
-- Chat in main lobby or DMs
+- Add friends by username
+- Chat in main lobby, DMs, or group chats
+- Create groups via Groups menu → Create Group
+- Browse and join existing groups via Groups menu → Browse Groups
 
 ## Security Notes
-
-- Recovery codes planned for password reset (no email dependency)
+- Passwords are salted and hashed — not stored in plaintext
 - Session tokens stored locally in `%APPDATA%\Epyks\config.ini`
 - Database: `epyks_data/epyks_chat.db`
+- Note: `std::hash` is used for password hashing — not cryptographically ideal, upgrade to bcrypt/Argon2 for production use
+
+## Planned
+- Voice chat (maybe, probably not, nobody's using this)
+- Cross-platform support (Linux/Mac)
+- Group admin and kick functionality
+- Password recovery
 
 ## License
-
 MIT — do whatever you want.
