@@ -250,15 +250,28 @@ public:
                         int id = std::stoi(token.substr(0, colon));
                         std::string name = token.substr(colon + 1);
                         availableGroups.push_back({ id, name });
-                        groupChats[id].groupName = name;
-                        groupChats[id].ID = id;
                     }
 
                 }
                 
             }
+            else if (packet.type == epyks::PacketType::JOIN_GROUP) {
+                epyks::JoinGroup resp;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (resp.Deserialize(bytes)) {
+                    for (auto& g : availableGroups) {
+                        if (g.first == resp.group_id) {
+                            groupChats[resp.group_id].groupName = g.second;
+                            groupChats[resp.group_id].ID = resp.group_id;
+                            break;
+                        }
+                    }
+                    if (groupChats[resp.group_id].groupName.empty()) {
+                        SendListGroups();
+                    }
+                }
+                }
 
-        
         }
         connected = false;
     }
@@ -825,57 +838,57 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             float chatWidth = viewportSize.x - sidebarWidth - 20;
             
-            if (currentGroupId != -1) {
-
-                ImGui::BeginChild("GroupArea", ImVec2(chatWidth, -30), false);
-
-
-                float chatHeight = ImGui::GetContentRegionAvail().y - 40;
-                ImGui::BeginChild("GroupHistory", ImVec2(0, chatHeight), true);
-                for (size_t i = 0; i < client.groupChats[currentGroupId].messages.size(); i++) {
-                    auto& m = client.groupChats[currentGroupId].messages[i];
-                    ImVec4 color;
-                    if (m.find("***") == 0) color = config.joinLeaveColor;
-                    else if (m.find("System:") == 0) color = config.systemColor;
-                    else if (m.find("[" + client.username + "]:") != std::string::npos)
-                        color = config.ownMessageColor;
-                    else color = config.otherMessageColor;
-
-                    ImGui::PushStyleColor(ImGuiCol_Text, color);
-                    ImGui::Selectable(m.c_str(), false);
-                    if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(1)) {
-                        ImGui::SetClipboardText(m.c_str());
-                    }
-                    ImGui::PopStyleColor();
-                }
-                if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
-                    ImGui::SetScrollHereY(1.0f);
-                }
-                ImGui::EndChild();
-
-                ImGui::Separator();
-
-                static bool refocusInput = false;
-                if (refocusInput) {
-                    ImGui::SetKeyboardFocusHere();
-                    refocusInput = false;
-                }
-
-                if (ImGui::InputText("##groupinput", groupInputBuf, 256, ImGuiInputTextFlags_EnterReturnsTrue)) {
-                    client.SendGroupMessage(currentGroupId, groupInputBuf);
-                    groupInputBuf[0] = '\0';
-                    refocusInput = true;
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Send")) {
-                    client.SendGroupMessage(currentGroupId, groupInputBuf);
-                    groupInputBuf[0] = '\0';
-                    refocusInput = true;
-                }
-
-                ImGui::EndChild();
-
+           if (currentGroupId != -1) {
+    ImGui::BeginChild("GroupArea", ImVec2(chatWidth, -30), false);
+    ImGui::Text("Group: %s", client.groupChats[currentGroupId].groupName.c_str());
+    ImGui::SameLine();
+    if (ImGui::Button("Leave Group")) {
+        client.SendLeaveGroup(currentGroupId);
+        client.groupChats.erase(currentGroupId);
+        currentGroupId = -1;
+    } else {
+        ImGui::Separator();
+        float chatHeight = ImGui::GetContentRegionAvail().y - 40;
+        ImGui::BeginChild("GroupHistory", ImVec2(0, chatHeight), true);
+        for (size_t i = 0; i < client.groupChats[currentGroupId].messages.size(); i++) {
+            auto& m = client.groupChats[currentGroupId].messages[i];
+            ImVec4 color;
+            if (m.find("***") == 0) color = config.joinLeaveColor;
+            else if (m.find("System:") == 0) color = config.systemColor;
+            else if (m.find("[" + client.username + "]:") != std::string::npos)
+                color = config.ownMessageColor;
+            else color = config.otherMessageColor;
+            ImGui::PushStyleColor(ImGuiCol_Text, color);
+            ImGui::Selectable(m.c_str(), false);
+            if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(1)) {
+                ImGui::SetClipboardText(m.c_str());
             }
+            ImGui::PopStyleColor();
+        }
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+            ImGui::SetScrollHereY(1.0f);
+        }
+        ImGui::EndChild();
+        ImGui::Separator();
+        static bool refocusInput = false;
+        if (refocusInput) {
+            ImGui::SetKeyboardFocusHere();
+            refocusInput = false;
+        }
+        if (ImGui::InputText("##groupinput", groupInputBuf, 256, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            client.SendGroupMessage(currentGroupId, groupInputBuf);
+            groupInputBuf[0] = '\0';
+            refocusInput = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Send")) {
+            client.SendGroupMessage(currentGroupId, groupInputBuf);
+            groupInputBuf[0] = '\0';
+            refocusInput = true;
+        }
+    }
+    ImGui::EndChild();
+}
             else if (currentDM.empty()) {
 
                 ImGui::BeginChild("ChatArea", ImVec2(chatWidth, -30), false);
@@ -1039,6 +1052,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     createGroupBuf[0] = '\0';
                     showCreateGroup = false;
                     ImGui::CloseCurrentPopup();
+
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Cancel")) {
@@ -1048,11 +1062,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 ImGui::EndPopup();
             }
 
+            static bool sentListRequest = false;
             if (showBrowseGroups) {
-                client.SendListGroups();
-                showBrowseGroups = false;
+                if (!sentListRequest) {
+                    client.SendListGroups();
+                    sentListRequest = true;
+                }
                 ImGui::OpenPopup("Browse Groups");
             }
+            if (!showBrowseGroups) sentListRequest = false;
             ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
             if (ImGui::BeginPopupModal("Browse Groups", &showBrowseGroups, ImGuiWindowFlags_AlwaysAutoResize)) {
                 ImGui::Text("Available Groups:");

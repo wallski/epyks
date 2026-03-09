@@ -54,10 +54,13 @@ Use Radmin if you don't wanna port forward.
 - Note: `std::hash` is used for password hashing — not cryptographically ideal, upgrade to bcrypt/Argon2 for production use
 
 ## Planned
-- Voice chat (maybe, probably not, nobody's using this)
-- Cross-platform support (Linux/Mac)
+- Passwords for groups
+- Voice chat
 - Group admin and kick functionality
 - Password recovery
+
+## Not planed
+- Cross-platform support (Linux/Mac). WHY? because i got too much cancer doing this for windows and I don't hate myself that much.
 
 ## License
 MIT — do whatever you want.

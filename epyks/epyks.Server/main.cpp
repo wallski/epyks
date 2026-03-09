@@ -389,6 +389,15 @@ public:
                 auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
                 if (req.Deserialize(bytes) && db) {
                     if (db->CreateGroup(req.group_name, username)) {
+                        int groupId = db->GetGroupByName(req.group_name);
+                        db->JoinGroup(username, groupId);
+                        epyks::JoinGroup joinResp;
+                        joinResp.group_id = groupId;
+                        auto joinBytes = joinResp.Serialize();
+                        epyks::Packet joinNotify;
+                        joinNotify.type = epyks::PacketType::JOIN_GROUP;
+                        joinNotify.data = std::string(joinBytes.begin(), joinBytes.end());
+                        SendTo(sock, joinNotify);
                         epyks::Packet notify;
                         notify.type = epyks::PacketType::CREATE_GROUP;
                         notify.data = "Group '" + req.group_name + "' created successfully";
@@ -409,9 +418,13 @@ public:
 				auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
                 if (req.Deserialize(bytes) && db) {
                     if (db->JoinGroup(username, req.group_id)) {
+                        epyks::JoinGroup resp;
+                        resp.group_id = req.group_id;
+                        auto respBytes = resp.Serialize();
+
                         epyks::Packet notify;
                         notify.type = epyks::PacketType::JOIN_GROUP;
-                        notify.data = "Group joined successfully";
+                        notify.data = std::string(respBytes.begin(), respBytes.end());
                         SendTo(sock, notify);
                         if (gui) gui->AddLog("[" + username + "] joined the group");
                     }
