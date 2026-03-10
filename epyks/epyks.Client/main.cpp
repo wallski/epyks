@@ -245,15 +245,16 @@ public:
                 while (std::getline(ss, token, ',')) {
                     if (token.empty()) continue;
                     size_t colon = token.find(':');
-
                     if (colon != std::string::npos) {
                         int id = std::stoi(token.substr(0, colon));
                         std::string name = token.substr(colon + 1);
                         availableGroups.push_back({ id, name });
+                        if (groupChats.count(id) && groupChats[id].groupName.empty()) {
+                            groupChats[id].groupName = name;
+                            groupChats[id].ID = id;
+                        }
                     }
-
                 }
-                
             }
             else if (packet.type == epyks::PacketType::JOIN_GROUP) {
                 epyks::JoinGroup resp;
@@ -814,6 +815,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
                     if (ImGui::Button(label.c_str(), ImVec2(-1, 25))) {
                         currentDM = friend_.username;
+                        currentGroupId = -1;
                         friend_.hasUnread = false;
                     }
                     ImGui::PopStyleColor();

@@ -279,6 +279,8 @@ public:
                 epyks::FriendRequest req;
                 auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
                 if (req.Deserialize(bytes)) {
+                    if (req.target_username == username) return;
+
                     bool targetOnline = false;
                     SOCKET targetSock = INVALID_SOCKET;
                     {

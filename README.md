@@ -53,8 +53,7 @@ Epyks is a lightweight chat platform built from scratch in C++. No email require
 - Note: `std::hash` is used for password hashing — not cryptographically ideal, upgrade to bcrypt/Argon2 for production use
 
 ## Known Bugs
-- You can add yourself as a friend
-- If a group is selected you can't switch to a DM without clicking Main Chat first
+- All fixed for now or unknown
 
 ## Planned
 - Unfriend
