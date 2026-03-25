@@ -55,8 +55,7 @@ Epyks is a lightweight chat platform built from scratch in C++. No email require
 ## Known Bugs
 - All fixed for now or unknown
 
-## Planned
-- Unfriend
+## Planned (not anymore ths project won't continue)
 - Block users
 - Passwords for groups
 - Voice chat
