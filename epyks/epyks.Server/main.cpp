@@ -336,6 +336,25 @@ public:
                     }
                 }
             }
+            else if (packet.type == epyks::PacketType::UNFRIEND) {
+                epyks::Unfriend req;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes) && db) {
+                    db->RemoveFriend(username, req.target_username);
+                    // notify the other person
+                    std::lock_guard<std::mutex> lock(clientsMutex);
+                    for (auto& c : clients) {
+                        if (c.username == req.target_username) {
+                            epyks::Packet notify;
+                            notify.type = epyks::PacketType::UNFRIEND;
+                            notify.data = username;
+                            SendTo(c.socket, notify);
+                            break;
+                        }
+                    }
+                    if (gui) gui->AddLog("[" + username + "] unfriended [" + req.target_username + "]");
+                }
+            }
             else if (packet.type == epyks::PacketType::PRIVATE_MESSAGE) {
                 epyks::PrivateMessage pm;
                 auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
@@ -494,7 +513,19 @@ public:
                 notify.type = epyks::PacketType::LIST_GROUPS;
                 notify.data = result;
                 SendTo(sock, notify);
-
+                }
+            else if (packet.type == epyks::PacketType::MY_GROUPS) {
+                    if (db) {
+                        auto groups = db->GetUserGroups(username);
+                        std::string payload;
+                        for (auto& g : groups) {
+                            payload += std::to_string(g.first) + ":" + g.second + ",";
+                        }
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::MY_GROUPS;
+                        notify.data = payload;
+                        SendTo(sock, notify);
+                    }
             }
         }
 

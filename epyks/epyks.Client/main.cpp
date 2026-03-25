@@ -102,6 +102,20 @@ public:
     std::string loginErrorMsg;
     std::string sessionToken;
 
+    void SendUnfriend(const std::string& target) {
+        if (!connected) return;
+        epyks::Unfriend uf;
+        uf.target_username = target;
+        auto ufBytes = uf.Serialize();
+        epyks::Packet packet;
+        packet.type = epyks::PacketType::UNFRIEND;
+        packet.data = std::string(ufBytes.begin(), ufBytes.end());
+        auto data = packet.Serialize();
+        uint32_t len = (uint32_t)data.size();
+        send(sock, (char*)&len, 4, 0);
+        send(sock, (char*)data.data(), len, 0);
+    }
+
     bool Connect(const char* ip, int port) {
         WSADATA wsaData;
         WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -271,7 +285,28 @@ public:
                         SendListGroups();
                     }
                 }
+            }
+            else if (packet.type == epyks::PacketType::MY_GROUPS) {
+                std::string data = packet.data;
+                std::stringstream ss(data);
+                std::string token;
+                while (std::getline(ss, token, ',')) {
+                    if (token.empty()) continue;
+                    size_t colon = token.find(':');
+                    if (colon != std::string::npos) {
+                        int id = std::stoi(token.substr(0, colon));
+                        std::string name = token.substr(colon + 1);
+                        groupChats[id].groupName = name;
+                        groupChats[id].ID = id;
+                    }
                 }
+            }
+            else if (packet.type == epyks::PacketType::UNFRIEND) {
+                std::string who = packet.data;
+                dmChats.erase(who);
+                RequestFriendList();
+            }
+
 
         }
         connected = false;
@@ -307,6 +342,15 @@ public:
         send(sock, (char*)data.data(), len, 0);
     }
 
+    void RequestMyGroups() {
+        if (!connected) return;
+        epyks::Packet packet;
+        packet.type = epyks::PacketType::MY_GROUPS;
+        auto data = packet.Serialize();
+        uint32_t len = (uint32_t)data.size();
+        send(sock, (char*)&len, 4, 0);
+        send(sock, (char*)data.data(), len, 0);
+    }
 
     //friends
     void SendFriendRequest(const std::string& target) {
@@ -449,10 +493,10 @@ public:
 };
 
 struct AppConfig {
-    ImVec4 bgColor = ImVec4(0.1f, 0.1f, 0.1f, 1.0f);
-    ImVec4 chatBgColor = ImVec4(0.15f, 0.15f, 0.15f, 1.0f);
+    ImVec4 bgColor = ImVec4(0.08f, 0.06f, 0.12f, 1.0f);
+    ImVec4 chatBgColor = ImVec4(0.12f, 0.10f, 0.18f, 1.0f);
     ImVec4 textColor = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-    ImVec4 ownMessageColor = ImVec4(0.4f, 0.8f, 1.0f, 1.0f);
+    ImVec4 ownMessageColor = ImVec4(0.75f, 0.50f, 1.0f, 1.0f);
     ImVec4 otherMessageColor = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
     ImVec4 systemColor = ImVec4(1.0f, 0.8f, 0.4f, 1.0f);
     ImVec4 joinLeaveColor = ImVec4(0.5f, 1.0f, 0.5f, 1.0f);
@@ -460,16 +504,44 @@ struct AppConfig {
 
     void Apply() {
         ImGuiStyle& style = ImGui::GetStyle();
+
+        // rounding
+        style.WindowRounding = 8.0f;
+        style.ChildRounding = 6.0f;
+        style.FrameRounding = 5.0f;
+        style.PopupRounding = 6.0f;
+        style.ScrollbarRounding = 4.0f;
+        style.GrabRounding = 4.0f;
+        style.TabRounding = 4.0f;
+
+        // spacing
+        style.WindowPadding = ImVec2(12, 12);
+        style.FramePadding = ImVec2(8, 4);
+        style.ItemSpacing = ImVec2(8, 6);
+        style.ScrollbarSize = 10.0f;
+
+        // colors
         style.Colors[ImGuiCol_WindowBg] = bgColor;
         style.Colors[ImGuiCol_ChildBg] = chatBgColor;
         style.Colors[ImGuiCol_Text] = textColor;
-        style.Colors[ImGuiCol_Button] = ImVec4(0.2f, 0.4f, 0.8f, 1.0f);
-        style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.3f, 0.5f, 0.9f, 1.0f);
-        style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.2f, 0.3f, 0.7f, 1.0f);
-        style.Colors[ImGuiCol_FrameBg] = ImVec4(0.2f, 0.2f, 0.2f, 1.0f);
-        style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.25f, 0.25f, 0.25f, 1.0f);
-        style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.3f, 0.3f, 0.3f, 1.0f);
-        style.Colors[ImGuiCol_MenuBarBg] = ImVec4(0.14f, 0.14f, 0.14f, 1.0f);
+        style.Colors[ImGuiCol_Button] = ImVec4(0.45f, 0.15f, 0.75f, 1.0f);
+        style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.55f, 0.25f, 0.85f, 1.0f);
+        style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.35f, 0.10f, 0.65f, 1.0f);
+        style.Colors[ImGuiCol_FrameBg] = ImVec4(0.18f, 0.18f, 0.25f, 1.0f);
+        style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.22f, 0.22f, 0.32f, 1.0f);
+        style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.26f, 0.26f, 0.38f, 1.0f);
+        style.Colors[ImGuiCol_MenuBarBg] = ImVec4(0.10f, 0.08f, 0.15f, 1.0f);
+        style.Colors[ImGuiCol_Header] = ImVec4(0.45f, 0.15f, 0.75f, 0.5f);
+        style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.45f, 0.15f, 0.75f, 0.7f);
+        style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.45f, 0.15f, 0.75f, 1.0f);
+        style.Colors[ImGuiCol_ScrollbarBg] = ImVec4(0.10f, 0.08f, 0.15f, 1.0f);
+        style.Colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.45f, 0.15f, 0.75f, 0.6f);
+        style.Colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.55f, 0.25f, 0.85f, 0.8f);
+        style.Colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.55f, 0.25f, 0.85f, 1.0f);
+        style.Colors[ImGuiCol_Separator] = ImVec4(0.45f, 0.15f, 0.75f, 0.4f);
+        style.Colors[ImGuiCol_TitleBg] = ImVec4(0.10f, 0.08f, 0.15f, 1.0f);
+        style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.20f, 0.10f, 0.35f, 1.0f);
+        style.Colors[ImGuiCol_PopupBg] = ImVec4(0.12f, 0.10f, 0.18f, 1.0f);
     }
 };
 
@@ -560,6 +632,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     SaveCredentials(client.username, client.sessionToken);
                 }
                 client.RequestFriendList();
+                client.RequestMyGroups();
                 memset(passwordBuf, 0, sizeof(passwordBuf));
             }
             memset(regPass, 0, sizeof(regPass));
@@ -764,7 +837,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("File")) {
-                    if (ImGui::MenuItem("Disconnect")) {
+                    if (ImGui::MenuItem("Logout")) {
                         ClearCredentials();
                         client.Disconnect();
                         showLogin = true;
@@ -809,19 +882,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 for (auto& friend_ : client.friends) {
                     ImVec4 color = friend_.hasUnread ? ImVec4(1.0f, 0.8f, 0.2f, 1.0f) : config.textColor;
                     ImGui::PushStyleColor(ImGuiCol_Text, color);
-
                     std::string label = friend_.username;
                     if (friend_.hasUnread) label += " *";
-
                     if (ImGui::Button(label.c_str(), ImVec2(-1, 25))) {
                         currentDM = friend_.username;
                         currentGroupId = -1;
                         friend_.hasUnread = false;
                     }
+                    if (ImGui::BeginPopupContextItem(("ctx##" + friend_.username).c_str())) {
+                        if (ImGui::MenuItem("Unfriend")) {
+                            client.SendUnfriend(friend_.username);
+                            client.dmChats.erase(friend_.username);
+                            if (currentDM == friend_.username) currentDM = "";
+                            client.RequestFriendList();
+                        }
+                        ImGui::EndPopup();
+                    }
                     ImGui::PopStyleColor();
                 }
             }
-           
             
             ImGui::Separator();
             ImGui::Text("Groups");

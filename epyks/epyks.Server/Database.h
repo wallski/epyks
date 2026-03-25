@@ -52,6 +52,9 @@ public:
     bool LeaveGroup(const std::string& username, int groupId);
     int GetGroupByName(const std::string& groupName);
     std::vector<std::pair<int, std::string>> GetAllGroups();
+    std::vector<std::pair<int, std::string>> GetUserGroups(const std::string& username);
+    bool DeleteGroup(int groupId);
+
 
 private:
     bool Execute(const std::string& sql);

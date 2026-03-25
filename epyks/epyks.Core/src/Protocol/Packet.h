@@ -43,6 +43,26 @@ namespace epyks {
         bool Deserialize(const std::vector<uint8_t>& bytes);
     };
 
+    struct Unfriend {
+        std::string target_username;
+
+        std::vector<uint8_t> Serialize() const {
+            std::vector<uint8_t> out;
+            uint32_t len = target_username.size();
+            out.insert(out.end(), (uint8_t*)&len, (uint8_t*)&len + 4);
+            out.insert(out.end(), target_username.begin(), target_username.end());
+            return out;
+        }
+
+        bool Deserialize(const std::vector<uint8_t>& data) {
+            if (data.size() < 4) return false;
+            uint32_t len = *(uint32_t*)data.data();
+            if (data.size() < 4 + len) return false;
+            target_username = std::string(data.begin() + 4, data.begin() + 4 + len);
+            return true;
+        }
+    };
+
     struct FriendResponse {
         bool accepted = false;
         std::string target_username;
@@ -102,7 +122,8 @@ namespace epyks {
         constexpr uint32_t PRIVATE_MESSAGE = 22;
         constexpr uint32_t FRIEND_LIST = 23;
         constexpr uint32_t ONLINE_STATUS = 24;
-
+        constexpr uint32_t UNFRIEND = 25;
+      
         // Accounts
         constexpr uint32_t REGISTER = 30;
         constexpr uint32_t REGISTER_RESPONSE = 31;
@@ -115,6 +136,7 @@ namespace epyks {
 		constexpr uint32_t LEAVE_GROUP = 42;
         constexpr uint32_t GROUP_MESSAGE = 43;
         constexpr uint32_t LIST_GROUPS = 44;
+        constexpr uint32_t MY_GROUPS = 45;
     }
 
     struct RegisterRequest {

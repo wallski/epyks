@@ -404,6 +404,28 @@ std::vector<std::pair<int, std::string>> Database::GetAllGroups() {
     return results;
 }
 
+std::vector<std::pair<int, std::string>> Database::GetUserGroups(const std::string& username) {
+    sqlite3_stmt* stmt;
+    sqlite3_prepare_v2(db,
+        "SELECT chat_groups.id, chat_groups.name FROM chat_groups "
+        "INNER JOIN group_members ON chat_groups.id = group_members.group_id "
+        "WHERE group_members.username = ?",
+        -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
+    std::vector<std::pair<int, std::string>> results;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        results.emplace_back(sqlite3_column_int(stmt, 0), (const char*)sqlite3_column_text(stmt, 1));
+    }
+    sqlite3_finalize(stmt);
+    return results;
+}
+
+bool Database::DeleteGroup(int groupId) {
+    Execute("DELETE FROM group_members WHERE group_id=" + std::to_string(groupId) + ";");
+    Execute("DELETE FROM chat_groups WHERE id=" + std::to_string(groupId) + ";");
+    return true;
+}
+
 //private messages
 
 void Database::SavePrivateMessage(const std::string& from, const std::string& to,
