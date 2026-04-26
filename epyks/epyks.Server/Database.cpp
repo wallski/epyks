@@ -20,7 +20,9 @@ bool Database::Open(const std::string& path) {
         "CREATE TABLE IF NOT EXISTS accounts ("
         "username TEXT PRIMARY KEY,"
         "password TEXT,"
-        "salt TEXT);"
+        "salt TEXT,"
+        "bio TEXT DEFAULT '',"
+        "pfp_url TEXT DEFAULT '');"
     );
 
     Execute(
@@ -357,9 +359,6 @@ bool Database::CreateServer(const std::string& name, const std::string& owner, c
         int serverId = (int)sqlite3_last_insert_rowid(db);
         JoinServer(owner, serverId, password);
         Execute("UPDATE server_members SET role=1 WHERE server_id=" + std::to_string(serverId) + " AND username='" + owner + "'");
-        
-        CreateChannel(serverId, "general", 0);
-        CreateChannel(serverId, "Voice Channel", 1);
     }
     
     return ok;
@@ -602,4 +601,59 @@ std::vector<ChatMessage> Database::GetPrivateMessages(const std::string& u1, con
     sqlite3_finalize(stmt);
     std::reverse(out.begin(), out.end());
     return out;
+}
+
+bool Database::UpdateProfile(const std::string& username, const std::string& bio, const std::string& pfp_url) {
+    sqlite3_stmt* stmt;
+    const char* sql = "UPDATE accounts SET bio = ?, pfp_url = ? WHERE username = ?;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text(stmt, 1, bio.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, pfp_url.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, username.c_str(), -1, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+UserProfileInfo Database::GetProfile(const std::string& username) {
+    UserProfileInfo info;
+    info.username = username;
+    sqlite3_stmt* stmt;
+    const char* sql = "SELECT bio, pfp_url FROM accounts WHERE username = ?;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char* bio = (const char*)sqlite3_column_text(stmt, 0);
+            const char* pfp = (const char*)sqlite3_column_text(stmt, 1);
+            if (bio) info.bio = bio;
+            if (pfp) info.pfp_url = pfp;
+        }
+        sqlite3_finalize(stmt);
+    }
+    return info;
+}
+
+std::vector<UserProfileInfo> Database::GetServerMembersDetailed(int serverId) {
+    std::vector<UserProfileInfo> members;
+    sqlite3_stmt* stmt;
+    const char* sql = "SELECT m.username, a.bio, a.pfp_url, m.role, m.is_muted "
+                      "FROM server_members m "
+                      "JOIN accounts a ON m.username = a.username "
+                      "WHERE m.server_id = ?;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, serverId);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            UserProfileInfo m;
+            m.username = (const char*)sqlite3_column_text(stmt, 0);
+            const char* bio = (const char*)sqlite3_column_text(stmt, 1);
+            const char* pfp = (const char*)sqlite3_column_text(stmt, 2);
+            if (bio) m.bio = bio;
+            if (pfp) m.pfp_url = pfp;
+            m.role = sqlite3_column_int(stmt, 3);
+            m.is_muted = sqlite3_column_int(stmt, 4) != 0;
+            members.push_back(m);
+        }
+        sqlite3_finalize(stmt);
+    }
+    return members;
 }

@@ -11,6 +11,14 @@ struct ChatMessage {
     uint64_t timestamp;
 };
 
+struct UserProfileInfo {
+    std::string username;
+    std::string bio;
+    std::string pfp_url;
+    int role = 0;
+    bool is_muted = false;
+};
+
 class Database {
     sqlite3* db = nullptr;
 
@@ -29,6 +37,8 @@ public:
     bool CreateAccountSecure(const std::string& username, const std::string& password);
     bool ValidateLoginSecure(const std::string& username, const std::string& password);
     bool AccountExists(const std::string& username);
+    bool UpdateProfile(const std::string& username, const std::string& bio, const std::string& pfp_url);
+    UserProfileInfo GetProfile(const std::string& username);
 
     // sessions
     bool SaveSessionToken(const std::string& username, const std::string& token);
@@ -50,6 +60,7 @@ public:
     bool CreateServer(const std::string& name, const std::string& owner, const std::string& password = "");
     bool JoinServer(const std::string& username, int serverId, const std::string& password = "");
     std::vector<std::pair<std::string, int>> GetServerMembers(int serverId);
+    std::vector<UserProfileInfo> GetServerMembersDetailed(int serverId);
     bool LeaveServer(const std::string& username, int serverId);
     int GetServerByName(const std::string& serverName);
     std::vector<std::pair<int, std::string>> GetAllServers();

@@ -519,4 +519,116 @@ namespace epyks {
         return true;
     }
 
+    std::vector<uint8_t> UserProfile::Serialize() const {
+        std::vector<uint8_t> result;
+        uint32_t uLen = (uint32_t)username.size();
+        uint32_t bLen = (uint32_t)bio.size();
+        uint32_t pLen = (uint32_t)pfp_url.size();
+        result.resize(12);
+        std::memcpy(result.data(), &uLen, 4);
+        std::memcpy(result.data() + 4, &bLen, 4);
+        std::memcpy(result.data() + 8, &pLen, 4);
+        result.insert(result.end(), username.begin(), username.end());
+        result.insert(result.end(), bio.begin(), bio.end());
+        result.insert(result.end(), pfp_url.begin(), pfp_url.end());
+        return result;
+    }
+
+    bool UserProfile::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 12) return false;
+        uint32_t uLen, bLen, pLen;
+        std::memcpy(&uLen, bytes.data(), 4);
+        std::memcpy(&bLen, bytes.data() + 4, 4);
+        std::memcpy(&pLen, bytes.data() + 8, 4);
+        if (bytes.size() != 12 + uLen + bLen + pLen) return false;
+        username.assign(bytes.begin() + 12, bytes.begin() + 12 + uLen);
+        bio.assign(bytes.begin() + 12 + uLen, bytes.begin() + 12 + uLen + bLen);
+        pfp_url.assign(bytes.begin() + 12 + uLen + bLen, bytes.end());
+        return true;
+    }
+
+    std::vector<uint8_t> ProfileUpdate::Serialize() const {
+        std::vector<uint8_t> result;
+        uint32_t bLen = (uint32_t)bio.size();
+        uint32_t pLen = (uint32_t)pfp_url.size();
+        result.resize(8);
+        std::memcpy(result.data(), &bLen, 4);
+        std::memcpy(result.data() + 4, &pLen, 4);
+        result.insert(result.end(), bio.begin(), bio.end());
+        result.insert(result.end(), pfp_url.begin(), pfp_url.end());
+        return result;
+    }
+
+    bool ProfileUpdate::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 8) return false;
+        uint32_t bLen, pLen;
+        std::memcpy(&bLen, bytes.data(), 4);
+        std::memcpy(&pLen, bytes.data() + 4, 4);
+        if (bytes.size() != 8 + bLen + pLen) return false;
+        bio.assign(bytes.begin() + 8, bytes.begin() + 8 + bLen);
+        pfp_url.assign(bytes.begin() + 8 + bLen, bytes.end());
+        return true;
+    }
+
+    std::vector<uint8_t> MemberListRequest::Serialize() const {
+        std::vector<uint8_t> result;
+        result.resize(4);
+        std::memcpy(result.data(), &server_id, 4);
+        return result;
+    }
+
+    bool MemberListRequest::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() != 4) return false;
+        std::memcpy(&server_id, bytes.data(), 4);
+        return true;
+    }
+
+    std::vector<uint8_t> MemberListResponse::Serialize() const {
+        std::vector<uint8_t> result;
+        uint32_t count = (uint32_t)members.size();
+        result.resize(8);
+        std::memcpy(result.data(), &server_id, 4);
+        std::memcpy(result.data() + 4, &count, 4);
+        for (const auto& m : members) {
+            uint32_t uLen = (uint32_t)m.username.size();
+            uint32_t bLen = (uint32_t)m.bio.size();
+            uint32_t pLen = (uint32_t)m.pfp_url.size();
+            uint32_t meta[5] = { uLen, bLen, pLen, (uint32_t)m.role, (uint32_t)(m.is_muted ? 1 : 0) };
+            size_t start = result.size();
+            result.resize(start + 20);
+            std::memcpy(result.data() + start, meta, 20);
+            result.insert(result.end(), m.username.begin(), m.username.end());
+            result.insert(result.end(), m.bio.begin(), m.bio.end());
+            result.insert(result.end(), m.pfp_url.begin(), m.pfp_url.end());
+        }
+        return result;
+    }
+
+    bool MemberListResponse::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 8) return false;
+        std::memcpy(&server_id, bytes.data(), 4);
+        uint32_t count = 0;
+        std::memcpy(&count, bytes.data() + 4, 4);
+        size_t offset = 8;
+        members.clear();
+        for (uint32_t i = 0; i < count; ++i) {
+            if (offset + 20 > bytes.size()) return false;
+            uint32_t meta[5];
+            std::memcpy(meta, bytes.data() + offset, 20);
+            offset += 20;
+            if (offset + meta[0] + meta[1] + meta[2] > bytes.size()) return false;
+            MemberInfo m;
+            m.username.assign(bytes.begin() + offset, bytes.begin() + offset + meta[0]);
+            offset += meta[0];
+            m.bio.assign(bytes.begin() + offset, bytes.begin() + offset + meta[1]);
+            offset += meta[1];
+            m.pfp_url.assign(bytes.begin() + offset, bytes.begin() + offset + meta[2]);
+            offset += meta[2];
+            m.role = (int)meta[3];
+            m.is_muted = meta[4] != 0;
+            members.push_back(m);
+        }
+        return true;
+    }
+
 } // namespace epyks

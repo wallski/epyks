@@ -167,6 +167,42 @@ namespace epyks {
         bool Deserialize(const std::vector<uint8_t>& bytes);
     };
 
+    struct UserProfile {
+        std::string username;
+        std::string bio;
+        std::string pfp_url;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
+    struct ProfileUpdate {
+        std::string bio;
+        std::string pfp_url;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
+    struct MemberListRequest {
+        int server_id;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
+    struct MemberInfo {
+        std::string username;
+        std::string bio;
+        std::string pfp_url;
+        int role;
+        bool is_muted;
+    };
+
+    struct MemberListResponse {
+        int server_id;
+        std::vector<MemberInfo> members;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
 
     // Packet type constants
     namespace PacketType {
@@ -213,6 +249,13 @@ namespace epyks {
         constexpr uint32_t JOIN_VOICE = 70;
         constexpr uint32_t LEAVE_VOICE = 71;
         constexpr uint32_t VOICE_DATA = 72;
+
+        // Profiles & Members
+        constexpr uint32_t PROFILE_UPDATE = 80;
+        constexpr uint32_t MEMBER_LIST_REQUEST = 81;
+        constexpr uint32_t MEMBER_LIST_RESPONSE = 82;
+        constexpr uint32_t GET_PROFILE = 83;
+        constexpr uint32_t PROFILE_DATA = 84;
     }
 
     struct RegisterRequest {

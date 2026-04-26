@@ -13,6 +13,12 @@ struct ma_context;
 struct OpusEncoder;
 struct OpusDecoder;
 
+struct AudioDeviceInfo {
+    std::string id;
+    std::string name;
+    bool isDefault;
+};
+
 class AudioClient {
 public:
     AudioClient();
@@ -30,6 +36,11 @@ public:
 
     // Retrieve encoded opus voice data to send to the server
     bool GetEncodedVoiceData(std::vector<uint8_t>& outData);
+
+    // Device management
+    std::vector<AudioDeviceInfo> GetInputDevices();
+    std::vector<AudioDeviceInfo> GetOutputDevices();
+    bool SetDevices(const std::string& inputId, const std::string& outputId);
 
     bool IsVoiceActive() const { return m_isVoiceActive; }
 

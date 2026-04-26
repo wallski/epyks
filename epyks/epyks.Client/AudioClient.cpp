@@ -134,6 +134,87 @@ void AudioClient::StopVoice() {
     m_isVoiceActive = false;
 }
 
+std::vector<AudioDeviceInfo> AudioClient::GetInputDevices() {
+    std::vector<AudioDeviceInfo> devices;
+    if (!m_context) return devices;
+
+    ma_device_info* pCaptureInfos;
+    ma_uint32 captureCount;
+    if (ma_context_get_devices(m_context, nullptr, nullptr, &pCaptureInfos, &captureCount) == MA_SUCCESS) {
+        for (ma_uint32 i = 0; i < captureCount; ++i) {
+            devices.push_back({ pCaptureInfos[i].name, pCaptureInfos[i].name, (bool)pCaptureInfos[i].isDefault });
+        }
+    }
+    return devices;
+}
+
+std::vector<AudioDeviceInfo> AudioClient::GetOutputDevices() {
+    std::vector<AudioDeviceInfo> devices;
+    if (!m_context) return devices;
+
+    ma_device_info* pPlaybackInfos;
+    ma_uint32 playbackCount;
+    if (ma_context_get_devices(m_context, &pPlaybackInfos, &playbackCount, nullptr, nullptr) == MA_SUCCESS) {
+        for (ma_uint32 i = 0; i < playbackCount; ++i) {
+            devices.push_back({ pPlaybackInfos[i].name, pPlaybackInfos[i].name, (bool)pPlaybackInfos[i].isDefault });
+        }
+    }
+    return devices;
+}
+
+bool AudioClient::SetDevices(const std::string& inputName, const std::string& outputName) {
+    if (!m_isInitialized) return false;
+
+    bool wasActive = m_isVoiceActive;
+    if (wasActive) StopVoice();
+
+    ma_device_uninit(m_device);
+
+    ma_device_info* pPlaybackInfos;
+    ma_uint32 playbackCount;
+    ma_device_info* pCaptureInfos;
+    ma_uint32 captureCount;
+    ma_context_get_devices(m_context, &pPlaybackInfos, &playbackCount, &pCaptureInfos, &captureCount);
+
+    ma_device_id* pCaptureID = nullptr;
+    ma_device_id* pPlaybackID = nullptr;
+
+    for (ma_uint32 i = 0; i < captureCount; ++i) {
+        if (inputName == pCaptureInfos[i].name) {
+            pCaptureID = &pCaptureInfos[i].id;
+            break;
+        }
+    }
+    for (ma_uint32 i = 0; i < playbackCount; ++i) {
+        if (outputName == pPlaybackInfos[i].name) {
+            pPlaybackID = &pPlaybackInfos[i].id;
+            break;
+        }
+    }
+
+    ma_device_config deviceConfig = ma_device_config_init(ma_device_type_duplex);
+    deviceConfig.capture.pDeviceID  = pCaptureID;
+    deviceConfig.capture.format     = ma_format_s16;
+    deviceConfig.capture.channels   = CHANNELS;
+    deviceConfig.capture.shareMode  = ma_share_mode_shared;
+    
+    deviceConfig.playback.pDeviceID = pPlaybackID;
+    deviceConfig.playback.format    = ma_format_s16;
+    deviceConfig.playback.channels  = CHANNELS;
+    
+    deviceConfig.sampleRate         = SAMPLE_RATE;
+    deviceConfig.dataCallback       = DataCallback;
+    deviceConfig.pUserData          = this;
+    deviceConfig.periodSizeInFrames = FRAME_SIZE; 
+
+    if (ma_device_init(m_context, &deviceConfig, m_device) != MA_SUCCESS) {
+        return false;
+    }
+
+    if (wasActive) StartVoice();
+    return true;
+}
+
 void AudioClient::PushVoiceData(const std::vector<uint8_t>& data) {
     if (!m_isVoiceActive) return;
     std::lock_guard<std::mutex> lock(m_inMutex);

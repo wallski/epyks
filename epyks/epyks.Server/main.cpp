@@ -530,10 +530,35 @@ public:
                 epyks::LeaveServer req;
                 auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
                 if (req.Deserialize(bytes) && db) {
+                    bool isOwner = db->IsServerOwner(username, req.server_id);
                     if (db->LeaveServer(username, req.server_id)) {
+                        if (isOwner) {
+                            auto members = db->GetServerMembers(req.server_id);
+                            db->DeleteServer(req.server_id);
+                            if (gui) gui->AddLog("Server [" + std::to_string(req.server_id) + "] deleted because owner left");
+                            
+                            std::lock_guard<std::mutex> lock(clientsMutex);
+                            for (const auto& member : members) {
+                                for (auto& c : clients) {
+                                    if (c.username == member.first) {
+                                        epyks::Packet notify;
+                                        notify.type = epyks::PacketType::LEAVE_SERVER;
+                                        notify.data = std::to_string(req.server_id);
+                                        SendTo(c.socket, notify);
+                                        break;
+                                    }
+                                }
+                            }
+                        } else {
+                            auto members = db->GetServerMembers(req.server_id);
+                            if (members.empty()) {
+                                db->DeleteServer(req.server_id);
+                                if (gui) gui->AddLog("Server [" + std::to_string(req.server_id) + "] deleted because it became empty");
+                            }
+                        }
                         epyks::Packet notify;
                         notify.type = epyks::PacketType::LEAVE_SERVER;
-                        notify.data = "Left Server successfully";
+                        notify.data = std::to_string(req.server_id);
                         SendTo(sock, notify);
                         if (gui) gui->AddLog("[" + username + "] left the server");
                     }
@@ -602,6 +627,61 @@ public:
                     epyks::Packet notify;
                     notify.type = epyks::PacketType::MY_SERVERS;
                     notify.data = payload;
+                    SendTo(sock, notify);
+                }
+            }
+            else if (packet.type == epyks::PacketType::PROFILE_UPDATE) {
+                epyks::ProfileUpdate req;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes) && db) {
+                    db->UpdateProfile(username, req.bio, req.pfp_url);
+                    epyks::UserProfile profile;
+                    profile.username = username;
+                    profile.bio = req.bio;
+                    profile.pfp_url = req.pfp_url;
+                    auto pBytes = profile.Serialize();
+                    epyks::Packet notify;
+                    notify.type = epyks::PacketType::PROFILE_DATA;
+                    notify.data = std::string(pBytes.begin(), pBytes.end());
+                    SendTo(sock, notify);
+                }
+            }
+            else if (packet.type == epyks::PacketType::GET_PROFILE) {
+                std::string target = packet.data;
+                if (target.empty()) target = username;
+                if (db) {
+                    auto info = db->GetProfile(target);
+                    epyks::UserProfile profile;
+                    profile.username = info.username;
+                    profile.bio = info.bio;
+                    profile.pfp_url = info.pfp_url;
+                    auto pBytes = profile.Serialize();
+                    epyks::Packet notify;
+                    notify.type = epyks::PacketType::PROFILE_DATA;
+                    notify.data = std::string(pBytes.begin(), pBytes.end());
+                    SendTo(sock, notify);
+                }
+            }
+            else if (packet.type == epyks::PacketType::MEMBER_LIST_REQUEST) {
+                epyks::MemberListRequest req;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes) && db) {
+                    auto members = db->GetServerMembersDetailed(req.server_id);
+                    epyks::MemberListResponse res;
+                    res.server_id = req.server_id;
+                    for (auto& m : members) {
+                        epyks::MemberInfo mi;
+                        mi.username = m.username;
+                        mi.bio = m.bio;
+                        mi.pfp_url = m.pfp_url;
+                        mi.role = m.role;
+                        mi.is_muted = m.is_muted;
+                        res.members.push_back(mi);
+                    }
+                    auto resBytes = res.Serialize();
+                    epyks::Packet notify;
+                    notify.type = epyks::PacketType::MEMBER_LIST_RESPONSE;
+                    notify.data = std::string(resBytes.begin(), resBytes.end());
                     SendTo(sock, notify);
                 }
             }
