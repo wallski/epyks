@@ -399,3 +399,9 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# Epyks Private Components
+epyks/epyks.Server/
+epyks/epyks.Core/
+epyks/epyks_data/
+*.db
