@@ -401,7 +401,7 @@ FodyWeavers.xsd
 *.sln.iml
 
 # Epyks Private Components
-epyks/epyks/epyks.Server/
-epyks/epyks/epyks.Core/
-epyks/epyks/epyks_data/
+epyks/epyks.Server/
+epyks/epyks.Core/
+epyks/epyks_data/
 *.db
