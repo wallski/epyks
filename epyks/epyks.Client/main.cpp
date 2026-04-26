@@ -1452,7 +1452,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
   bool isConnecting = false;
   bool triedAutoLogin = false;
 
-  char serverIP[64] = "127.0.0.1";
+  // HARDCODE YOUR SERVER ADDRESS HERE (e.g. "epyks-server.playit.gg" or your Cloud IP)
+  char serverIP[64] = "127.0.0.1"; 
   char usernameBuf[64] = "";
   char passwordBuf[64] = "";
   char regUser[64] = "";

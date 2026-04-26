@@ -108,6 +108,8 @@ public:
         }
 
         threads.emplace_back(&ChatServer::AcceptLoop, this);
+        if (gui) gui->AddLog("Server listening on port " + std::to_string(port));
+        else printf("Server listening on port %d\n", port);
         return true;
     }
 
@@ -141,12 +143,14 @@ public:
 
             if (clientSocket == INVALID_SOCKET) {
                 if (accepting && gui) gui->AddLog("[Error] Accept failed");
+                else if (accepting) printf("[Error] Accept failed\n");
                 continue;
             }
 
             char ip[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &clientAddr.sin_addr, ip, INET_ADDRSTRLEN);
             if (gui) gui->AddLog("Connection from " + std::string(ip));
+            else printf("Connection from %s\n", ip);
 
             {
                 std::lock_guard<std::mutex> lock(clientsMutex);
@@ -996,17 +1000,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     if (!gui.Initialize()) return 1;
 
     Database database;
-
-
-    char exePath[MAX_PATH];
-    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-    std::string exeDir = exePath;
-    exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
-
-    std::string dataDir = exeDir + "\\epyks_data";
-    std::string dbPath = dataDir + "\\epyks_chat.db";
-
-    CreateDirectoryA(dataDir.c_str(), nullptr);
+    std::filesystem::create_directories("epyks_data");
+    std::string dbPath = "epyks_data/epyks_chat.db";
 
     if (!database.Open(dbPath)) {
         gui.AddLog("[Error] Database failed: " + dbPath);
@@ -1014,13 +1009,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     else {
         gui.AddLog("[System] Database OK: " + dbPath);
         gui.SetDatabase(&database);
-
-        auto messages = database.GetRecentMessages(1000);
-        for (const auto& msg : messages) {
-            gui.AddLog(msg.username + ": " + msg.message);
-        }
-
-        gui.AddLog("[System] Chat history loaded from database.");
         gui.scrollToBottom = true;
     }
 
@@ -1047,10 +1035,52 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     if (gui.IsServerRunning()) {
         server.Stop();
-        gui.ServerStopped();
     }
 
     database.Close();
     gui.Shutdown();
+    return 0;
+}
+
+int main(int argc, char* argv[]) {
+    bool headless = false;
+    int port = 9001;
+
+    for (int i = 1; i < argc; i++) {
+        if (std::string(argv[i]) == "--headless") headless = true;
+        if (std::string(argv[i]) == "--port" && i + 1 < argc) port = std::stoi(argv[++i]);
+    }
+
+    if (!headless) {
+#ifdef _WIN32
+        return WinMain(GetModuleHandle(NULL), NULL, GetCommandLineA(), SW_SHOWNORMAL);
+#else
+        printf("[Error] GUI mode is only supported on Windows. Use --headless.\n");
+        return 1;
+#endif
+    }
+
+    printf("--- Epyks Server (Headless Mode) ---\n");
+
+    Database database;
+    std::filesystem::create_directories("epyks_data");
+    std::string dbPath = "epyks_data/epyks_chat.db";
+
+    if (!database.Open(dbPath)) {
+        printf("[Error] Failed to open database at %s\n", dbPath.c_str());
+        return 1;
+    }
+    printf("[System] Database OK\n");
+
+    ChatServer server;
+    server.SetDatabase(&database);
+
+    if (server.Start(port)) {
+        printf("[System] Server listening on port %d\n", port);
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
+
     return 0;
 }
