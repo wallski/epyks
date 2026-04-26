@@ -26,9 +26,36 @@
 #include <thread>
 #include <tuple>
 #include <vector>
+#include <set>
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "comdlg32.lib")
+#include <urlmon.h>
+#pragma comment(lib, "urlmon.lib")
+
+static std::set<std::string> g_downloadingPFPs;
+static std::mutex g_downloadingMutex;
+
+bool IsUrl(const std::string& str) {
+  return str.find("http://") == 0 || str.find("https://") == 0;
+}
+
+bool IsServerUrl(const std::string& str) {
+  return str.find("server://") == 0;
+}
+
+std::string GetPfpCachePath(const std::string& url) {
+  size_t hash = std::hash<std::string>{}(url);
+  std::string ext = ".png";
+  if (url.find(".jpg") != std::string::npos || url.find(".jpeg") != std::string::npos) ext = ".jpg";
+  if (url.find(".webp") != std::string::npos) ext = ".webp";
+  
+  char path[MAX_PATH];
+  GetEnvironmentVariableA("APPDATA", path, MAX_PATH);
+  std::string dir = std::string(path) + "\\Epyks\\cache";
+  std::filesystem::create_directories(dir);
+  return dir + "\\" + std::to_string(hash) + ext;
+}
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "../../deps/stb/stb_image.h"
@@ -182,6 +209,9 @@ struct ServerChat {
   int ID;
 };
 
+class ChatClient;
+extern ChatClient client;
+
 class ChatClient {
 public:
   ChatClient() { 
@@ -237,6 +267,35 @@ public:
   std::string loginErrorMsg;
   std::string sessionToken;
   std::mutex stateMutex;
+
+  void SendPacket(const epyks::Packet &packet) {
+    if (!connected)
+      return;
+    auto data = packet.Serialize();
+    uint32_t len = (uint32_t)data.size();
+    send(sock, (char *)&len, 4, 0);
+    send(sock, (char *)data.data(), len, 0);
+  }
+
+  void RequestPfp(const std::string &targetUser) {
+    epyks::PfpRequest req;
+    req.username = targetUser;
+    epyks::Packet pkg;
+    pkg.type = epyks::PacketType::PFP_REQUEST;
+    auto bytes = req.Serialize();
+    pkg.data = std::string(bytes.begin(), bytes.end());
+    SendPacket(pkg);
+  }
+
+  void UploadPfp(const std::vector<uint8_t> &imageData) {
+    epyks::PfpUpload req;
+    req.image_data = imageData;
+    epyks::Packet pkg;
+    pkg.type = epyks::PacketType::PFP_UPLOAD;
+    auto bytes = req.Serialize();
+    pkg.data = std::string(bytes.begin(), bytes.end());
+    SendPacket(pkg);
+  }
 
   void SendUnfriend(const std::string &target) {
     if (!connected)
@@ -419,6 +478,20 @@ public:
             std::lock_guard<std::mutex> stateLock(stateMutex);
             loginFailed = true;
             loginErrorMsg = resp.error;
+          }
+        }
+      } else if (packet.type == epyks::PacketType::PFP_RESPONSE) {
+        epyks::PfpResponse resp;
+        auto bytes =
+            std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+        if (resp.Deserialize(bytes)) {
+          std::string cachePath =
+              GetPfpCachePath("server://" + resp.username + ".png");
+          std::ofstream file(cachePath, std::ios::binary);
+          if (file.is_open()) {
+            file.write((const char *)resp.image_data.data(),
+                       resp.image_data.size());
+            file.close();
           }
         }
       } else if (packet.type == epyks::PacketType::SERVER_MESSAGE) {
@@ -1043,7 +1116,7 @@ public:
     vd.channel_id = currentVoiceChannelId;
     vd.audio_data = pcm;
     auto bytes = vd.Serialize();
-    sendto(udpSock, (char *)bytes.data(), bytes.size(), 0,
+    sendto(udpSock, (char *)bytes.data(), static_cast<int>(bytes.size()), 0,
            (sockaddr *)&serverUdpAddr, sizeof(serverUdpAddr));
   }
 
@@ -1204,28 +1277,58 @@ void DrawAvatar(const std::string &username, const std::string &pfpUrl,
   }
 
   bool textureDrawn = false;
+  std::string targetPath = pfpUrl;
+
   if (!pfpUrl.empty()) {
-    auto it = g_textureCache.find(pfpUrl);
-    if (it == g_textureCache.end()) {
-      // Try to load
-      TextureInfo info = LoadTextureFromFile(pfpUrl.c_str(), g_pd3dDevice);
-      if (info.srv) {
-        g_textureCache[pfpUrl] = info;
-        it = g_textureCache.find(pfpUrl);
+    if (IsUrl(pfpUrl)) {
+      targetPath = GetPfpCachePath(pfpUrl);
+      if (!std::filesystem::exists(targetPath)) {
+        std::lock_guard<std::mutex> lock(g_downloadingMutex);
+        if (g_downloadingPFPs.find(pfpUrl) == g_downloadingPFPs.end()) {
+          g_downloadingPFPs.insert(pfpUrl);
+          std::thread([pfpUrl, targetPath]() {
+            URLDownloadToFileA(NULL, pfpUrl.c_str(), targetPath.c_str(), 0, NULL);
+            std::lock_guard<std::mutex> lock(g_downloadingMutex);
+            g_downloadingPFPs.erase(pfpUrl);
+          }).detach();
+        }
+        targetPath = ""; // Not ready yet
+      }
+    } else if (IsServerUrl(pfpUrl)) {
+      targetPath = GetPfpCachePath(pfpUrl); // Uses hashing too
+      if (!std::filesystem::exists(targetPath)) {
+        // Request from server
+        std::lock_guard<std::mutex> lock(g_downloadingMutex);
+        if (g_downloadingPFPs.find(pfpUrl) == g_downloadingPFPs.end()) {
+          g_downloadingPFPs.insert(pfpUrl);
+          // We need the username to request it. The URL is server://[username].png
+          std::string targetUser = pfpUrl.substr(9); // server://
+          size_t dot = targetUser.find_last_of('.');
+          if (dot != std::string::npos) targetUser = targetUser.substr(0, dot);
+          
+          // Request on a thread or just call it (SendTo is non-blocking usually)
+          extern ChatClient client; // We need access to the client
+          client.RequestPfp(targetUser);
+        }
+        targetPath = "";
       }
     }
 
-    if (it != g_textureCache.end() && it->second.srv) {
-      // Draw circle clipped texture
-      dl->PathArcTo(center, r, 0, 3.14159f * 2.0f, 32);
-      dl->PathFillConvex(IM_COL32(255, 255, 255, 255)); // Mask or background
+    if (!targetPath.empty()) {
+      auto it = g_textureCache.find(targetPath);
+      if (it == g_textureCache.end()) {
+        TextureInfo info = LoadTextureFromFile(targetPath.c_str(), g_pd3dDevice);
+        if (info.srv) {
+          g_textureCache[targetPath] = info;
+          it = g_textureCache.find(targetPath);
+        }
+      }
 
-      // Using ImGui::Image would be easier but we are in a custom DrawList
-      // We'll use AddImageQuad or just AddImage with a circular clip if
-      // possible For now, let's just do a simple square image with rounding
-      dl->AddImageRounded(it->second.srv, c, {c.x + size, c.y + size}, {0, 0},
-                          {1, 1}, IM_COL32_WHITE, r);
-      textureDrawn = true;
+      if (it != g_textureCache.end() && it->second.srv) {
+        dl->AddImageRounded(it->second.srv, c, {c.x + size, c.y + size}, {0, 0},
+                            {1, 1}, IM_COL32_WHITE, r);
+        textureDrawn = true;
+      }
     }
   }
 
@@ -1488,8 +1591,10 @@ static void DrawCallView(ChatClient &client) {
   ImGui::EndChild();
 }
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
-                   LPSTR lpCmdLine, int nCmdShow) {
+ChatClient client;
+
+int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
+                   _In_ LPSTR lpCmdLine, _In_ int nCmdShow) {
   WNDCLASSEX wc = {sizeof(wc), CS_CLASSDC,  WndProc,
                    0L,         0L,          GetModuleHandle(nullptr),
                    nullptr,    nullptr,     nullptr,
@@ -1532,8 +1637,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
       io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 18.0f);
   if (!mainFont)
     io.Fonts->AddFontDefault();
-
-  ChatClient client;
 
   char groupInputBuf[256] = {};
   bool showLogin = true;
@@ -2641,21 +2744,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             ImGui::Text("Bio");
             ImGui::InputTextMultiline("##bio", bioBuf, 1024, ImVec2(500, 100));
             ImGui::Dummy(ImVec2(0, 10));
-            ImGui::Text("PFP URL or Local File");
-            ImGui::PushItemWidth(380);
-            ImGui::InputText("##pfp", pfpUrlBuf, 512);
-            ImGui::PopItemWidth();
+            ImGui::Text("Profile Picture");
+            
+            // Show current PFP in settings
+            DrawAvatar(client.username, client.myProfile.pfp_url, 64);
             ImGui::SameLine();
-            if (ImGui::Button("Browse...")) {
-              std::string path = PickLocalFile();
-              if (!path.empty()) {
-                strncpy_s(pfpUrlBuf, 512, path.c_str(), _TRUNCATE);
-              }
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 12);
+            if (ImGui::Button("Upload New PFP", ImVec2(150, 40))) {
+                std::string path = PickLocalFile();
+                if (!path.empty()) {
+                    std::ifstream file(path, std::ios::binary);
+                    if (file.is_open()) {
+                        std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+                        client.UploadPfp(data);
+                    }
+                }
             }
+            ImGui::TextDisabled("Selected file will be uploaded directly to the Epyks server.");
+            
             ImGui::Dummy(ImVec2(0, 20));
-            if (ImGui::Button("Save Profile", ImVec2(120, 40))) {
-              client.SendProfileUpdate(bioBuf, pfpUrlBuf);
-              client.myProfile.pfp_url = pfpUrlBuf;
+            if (ImGui::Button("Save Bio", ImVec2(120, 40))) {
+              client.SendProfileUpdate(bioBuf, client.myProfile.pfp_url);
               client.myProfile.bio = bioBuf;
             }
           } else if (settingsTab == 2) {
