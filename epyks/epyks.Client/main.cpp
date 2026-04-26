@@ -184,7 +184,10 @@ struct ServerChat {
 
 class ChatClient {
 public:
-  ChatClient() { audio.Initialize(); }
+  ChatClient() { 
+    audio = std::make_shared<AudioClient>();
+    audio->Initialize(); 
+  }
 
   SOCKET sock = INVALID_SOCKET;
   std::atomic<bool> connected{false};
@@ -208,7 +211,7 @@ public:
   int serverPort;
   sockaddr_in serverUdpAddr = {};
 
-  AudioClient audio;
+  std::shared_ptr<AudioClient> audio;
   std::atomic<bool> inVoice{false};
   int currentVoiceServerId = -1;
   int currentVoiceChannelId = -1;
@@ -392,8 +395,8 @@ public:
             myProfile.username = username;
             myProfile.pfp_url = "";
             userProfileCache[username] = myProfile;
-            SaveConfig(username, sessionToken, audio.GetCurrentInputDevice(),
-                       audio.GetCurrentOutputDevice());
+            SaveConfig(username, sessionToken, audio->GetCurrentInputDevice(),
+                       audio->GetCurrentOutputDevice());
             RequestMyServers();
             RequestFriendList();
             RequestProfile("", true);
@@ -1004,7 +1007,7 @@ public:
     currentVoiceServerId = serverId;
     currentVoiceChannelId = channelId;
     inVoice = true;
-    audio.StartVoice();
+    audio->StartVoice();
 
     // Send initial UDP packet to authenticate our endpoint
     SendVoiceData({});
@@ -1026,7 +1029,7 @@ public:
     send(sock, (char *)data.data(), len, 0);
 
     inVoice = false;
-    audio.StopVoice();
+    audio->StopVoice();
     currentVoiceServerId = -1;
     currentVoiceChannelId = -1;
   }
@@ -1050,7 +1053,7 @@ public:
       if (inVoice) {
         // Send any queued outgoing voice data
         std::vector<uint8_t> outData;
-        while (audio.GetEncodedVoiceData(outData)) {
+        while (audio->GetEncodedVoiceData(outData)) {
           SendVoiceData(outData);
         }
       }
@@ -1069,7 +1072,7 @@ public:
           std::vector<uint8_t> data(buffer, buffer + bytes);
           epyks::VoiceData pkt;
           if (pkt.Deserialize(data)) {
-            audio.PushVoiceData(pkt.audio_data);
+            audio->PushVoiceData(pkt.audio_data);
           }
         }
       }
@@ -1094,7 +1097,9 @@ public:
       recvThread.join();
     if (udpThread.joinable())
       udpThread.join();
-    audio.Shutdown();
+    if (audio) {
+      audio->StopVoice();
+    }
   }
 };
 
@@ -1400,7 +1405,7 @@ static void DrawCallView(ChatClient &client) {
     };
 
     // 1. Render Local User
-    bool localTalking = client.audio.IsSpeaking();
+    bool localTalking = client.audio->IsSpeaking();
     renderMember(client.username, client.myProfile.pfp_url, localTalking,
                  client.isMuted, client.isDeafened, true);
 
@@ -1447,13 +1452,13 @@ static void DrawCallView(ChatClient &client) {
   if (IconButton(client.isMuted ? "MIC OFF" : "MIC ON", client.isMuted,
                  ImVec4(0.9f, 0.3f, 0.3f, 1.f), "Toggle Mic")) {
     client.isMuted = !client.isMuted;
-    client.audio.SetMute(client.isMuted);
+    client.audio->SetMute(client.isMuted);
   }
   ImGui::SameLine(0, 8);
   if (IconButton(client.isDeafened ? "DEAF ON" : "DEAF OFF", client.isDeafened,
                  ImVec4(0.9f, 0.3f, 0.3f, 1.f), "Toggle Deafen")) {
     client.isDeafened = !client.isDeafened;
-    client.audio.SetDeafened(client.isDeafened);
+    client.audio->SetDeafened(client.isDeafened);
   }
   ImGui::SameLine(0, 8);
   ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 20.0f);
@@ -1551,7 +1556,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     strcpy_s(usernameBuf, savedUser.c_str());
     triedAutoLogin = true;
     if (!savedInDev.empty() || !savedOutDev.empty()) {
-      client.audio.SetDevices(savedInDev, savedOutDev);
+      client.audio->SetDevices(savedInDev, savedOutDev);
     }
   }
 
@@ -1610,16 +1615,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
       }
     }
 
-    // DEBUG: Press F1 to connect to LOCALHOST for testing
-    if (ImGui::IsKeyPressed(ImGuiKey_F1) && !isConnecting) {
-      isConnecting = true;
-      if (client.Connect(serverIP, serverPort)) {
-        client.Login(usernameBuf, passwordBuf);
-      } else {
-        isConnecting = false;
-        std::lock_guard<std::mutex> lock(client.stateMutex);
-        client.loginErrorMsg = "Local Debug Connect Failed (Server Off?)";
-      }
+    if (showSettings && inputDevices.empty()) {
+        inputDevices = client.audio->GetInputDevices();
+        outputDevices = client.audio->GetOutputDevices();
+        
+        // Find selected indices
+        std::string currentIn = client.audio->GetCurrentInputDevice();
+        std::string currentOut = client.audio->GetCurrentOutputDevice();
+        for (int i = 0; i < (int)inputDevices.size(); ++i) {
+            if (inputDevices[i].name == currentIn) { selectedInputDevice = i; break; }
+        }
+        for (int i = 0; i < (int)outputDevices.size(); ++i) {
+            if (outputDevices[i].name == currentOut) { selectedOutputDevice = i; break; }
+        }
+    } else if (!showSettings) {
+        inputDevices.clear(); // Reset so it refreshes next time
     }
 
     if (client.loginSuccess) {
@@ -1646,7 +1656,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         std::string inDev, outDev;
         if (LoadConfig(client.username, client.sessionToken, inDev, outDev)) {
           if (!inDev.empty() || !outDev.empty()) {
-            client.audio.SetDevices(inDev, outDev);
+            client.audio->SetDevices(inDev, outDev);
           }
         }
 
@@ -2075,7 +2085,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 client.showVoiceCallWindow = false;
               }
               if (channel.type == 1) { // Voice
-                client.audio.StartVoice();
+                client.audio->StartVoice();
                 client.SendJoinVoice(client.currentServerId, channel.id);
                 client.showVoiceCallWindow = true;
               }
@@ -2132,11 +2142,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                   _TRUNCATE);
         strncpy_s(pfpUrlBuf, sizeof(pfpUrlBuf),
                   client.myProfile.pfp_url.c_str(), _TRUNCATE);
-        inputDevices = client.audio.GetInputDevices();
-        outputDevices = client.audio.GetOutputDevices();
+        inputDevices = client.audio->GetInputDevices();
+        outputDevices = client.audio->GetOutputDevices();
         // Pre-select current devices
-        std::string curIn = client.audio.GetCurrentInputDevice();
-        std::string curOut = client.audio.GetCurrentOutputDevice();
+        std::string curIn = client.audio->GetCurrentInputDevice();
+        std::string curOut = client.audio->GetCurrentOutputDevice();
         selectedInputDevice = 0;
         selectedOutputDevice = 0;
         for (int i = 0; i < (int)inputDevices.size(); i++)
@@ -2663,7 +2673,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 if (ImGui::Selectable(inputDevices[i].name.c_str(),
                                       selectedInputDevice == i)) {
                   selectedInputDevice = i;
-                  client.audio.SetDevices(
+                  client.audio->SetDevices(
                       inputDevices[selectedInputDevice].name,
                       outputDevices[selectedOutputDevice].name);
                   SaveConfig(client.username, client.sessionToken,
@@ -2684,7 +2694,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 if (ImGui::Selectable(outputDevices[i].name.c_str(),
                                       selectedOutputDevice == i)) {
                   selectedOutputDevice = i;
-                  client.audio.SetDevices(
+                  client.audio->SetDevices(
                       inputDevices[selectedInputDevice].name,
                       outputDevices[selectedOutputDevice].name);
                   SaveConfig(client.username, client.sessionToken,
@@ -2693,6 +2703,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 }
               }
               ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Refresh")) {
+                inputDevices.clear(); // Forces a refresh on next frame
             }
             ImGui::PopItemWidth();
             // Auto-applied on selection
@@ -2799,40 +2813,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             }
             ImGui::Dummy(ImVec2(0, 10));
             if (ImGui::Button("+ Create Channel", ImVec2(170, 35))) {
-              showInlineChannelForm = true;
               inlineFormIsCategory = false;
               inlineChName[0] = '\0';
               inlineChType = 0;
               inlineChCatIdx = 0;
+              ImGui::OpenPopup("Create Channel Modal");
             }
             ImGui::SameLine();
             if (ImGui::Button("+ Create Category", ImVec2(170, 35))) {
-              showInlineChannelForm = true;
               inlineFormIsCategory = true;
               inlineChName[0] = '\0';
+              ImGui::OpenPopup("Create Channel Modal");
             }
 
-            if (showInlineChannelForm) {
+            if (ImGui::BeginPopupModal("Create Channel Modal", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
               ImGui::Dummy(ImVec2(0, 8));
-              ImGui::PushStyleColor(ImGuiCol_ChildBg,
-                                    ImVec4(0.12f, 0.13f, 0.15f, 1.0f));
-              ImGui::BeginChild("InlineForm",
-                                ImVec2(0, inlineFormIsCategory ? 110 : 180),
-                                true);
-              ImGui::Dummy(ImVec2(0, 6));
-              ImGui::SetCursorPosX(12);
               ImGui::Text(inlineFormIsCategory ? "Category Name"
                                                : "Channel Name");
-              ImGui::SetCursorPosX(12);
               ImGui::PushItemWidth(440);
               ImGui::InputText("##ilname", inlineChName, 64);
               ImGui::PopItemWidth();
 
               if (!inlineFormIsCategory) {
                 ImGui::Dummy(ImVec2(0, 4));
-                ImGui::SetCursorPosX(12);
                 ImGui::Text("Type");
-                ImGui::SetCursorPosX(12);
                 ImGui::PushItemWidth(440);
                 ImGui::Combo("##iltype", &inlineChType, "Text\0Voice\0");
                 ImGui::PopItemWidth();
@@ -2840,9 +2844,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 if (inlineChCatIdx >= (int)catOpts.size())
                   inlineChCatIdx = 0;
                 ImGui::Dummy(ImVec2(0, 4));
-                ImGui::SetCursorPosX(12);
                 ImGui::Text("Category");
-                ImGui::SetCursorPosX(12);
                 ImGui::PushItemWidth(440);
                 if (ImGui::BeginCombo("##ilcat",
                                       catOpts[inlineChCatIdx].c_str())) {
@@ -2856,7 +2858,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
               }
 
               ImGui::Dummy(ImVec2(0, 8));
-              ImGui::SetCursorPosX(12);
               if (ImGui::Button("Create##il", ImVec2(100, 30))) {
                 client.lastServerOpStatus = "Sending request...";
                 if (strlen(inlineChName) > 0) {
@@ -2884,16 +2885,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                                              inlineChName, inlineChType, cat);
                   }
                   inlineChName[0] = '\0';
-                  showInlineChannelForm = false;
+                  ImGui::CloseCurrentPopup();
                 }
               }
               ImGui::SameLine();
               if (ImGui::Button("Cancel##il", ImVec2(100, 30))) {
-                showInlineChannelForm = false;
                 inlineChName[0] = '\0';
+                ImGui::CloseCurrentPopup();
               }
-              ImGui::EndChild();
-              ImGui::PopStyleColor();
+              ImGui::EndPopup();
             }
 
             ImGui::Dummy(ImVec2(0, 10));

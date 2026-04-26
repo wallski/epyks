@@ -4,6 +4,23 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "../../deps/miniaudio/miniaudio.h"
 #include "../../deps/opus/include/opus.h"
+#include <fstream>
+#include <chrono>
+#include <iomanip>
+
+static void AudioLog(const std::string& msg) {
+    char path[MAX_PATH];
+    if (GetEnvironmentVariableA("APPDATA", path, MAX_PATH)) {
+        std::string logPath = std::string(path) + "\\Epyks\\client_log.txt";
+        std::ofstream logFile(logPath, std::ios::app);
+        if (logFile.is_open()) {
+            auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+            struct tm buf;
+            localtime_s(&buf, &now);
+            logFile << "[" << std::put_time(&buf, "%H:%M:%S") << "] [Audio] " << msg << std::endl;
+        }
+    }
+}
 
 AudioClient::AudioClient()
     : m_context(nullptr), m_device(nullptr), m_encoder(nullptr), m_decoder(nullptr),
@@ -36,14 +53,15 @@ bool AudioClient::Initialize() {
     }
 
     m_context = new ma_context;
-    if (ma_context_init(NULL, 0, NULL, m_context) != MA_SUCCESS) {
-        std::cerr << "Failed to initialize miniaudio context." << std::endl;
-        opus_encoder_destroy(m_encoder);
-        opus_decoder_destroy(m_decoder);
-        delete m_context;
+    ma_backend backends[] = { ma_backend_wasapi, ma_backend_dsound, ma_backend_winmm };
+    AudioLog("Initializing context with backends: WASAPI, DSound, WinMM...");
+    
+    ma_result res = ma_context_init(backends, 3, NULL, m_context);
+    if (res != MA_SUCCESS) {
+        AudioLog("ma_context_init failed! Error: " + std::to_string((int)res));
         return false;
     }
-
+    AudioLog("Context initialized successfully using backend: " + std::string(ma_get_backend_name(m_context->backend)));
     m_device = new ma_device;
     ma_device_config deviceConfig = ma_device_config_init(ma_device_type_duplex);
     deviceConfig.capture.pDeviceID  = NULL;
@@ -136,28 +154,44 @@ void AudioClient::StopVoice() {
 
 std::vector<AudioDeviceInfo> AudioClient::GetInputDevices() {
     std::vector<AudioDeviceInfo> devices;
-    if (!m_context) return devices;
+    if (!m_context) {
+        AudioLog("GetInputDevices: m_context is NULL");
+        return devices;
+    }
 
     ma_device_info* pCaptureInfos;
     ma_uint32 captureCount;
-    if (ma_context_get_devices(m_context, nullptr, nullptr, &pCaptureInfos, &captureCount) == MA_SUCCESS) {
+    ma_result res = ma_context_get_devices(m_context, nullptr, nullptr, &pCaptureInfos, &captureCount);
+    if (res == MA_SUCCESS) {
+        AudioLog("Found " + std::to_string(captureCount) + " input devices.");
         for (ma_uint32 i = 0; i < captureCount; ++i) {
+            AudioLog("  -> " + std::string(pCaptureInfos[i].name));
             devices.push_back({ pCaptureInfos[i].name, pCaptureInfos[i].name, (bool)pCaptureInfos[i].isDefault });
         }
+    } else {
+        AudioLog("ma_context_get_devices (capture) failed with error: " + std::to_string((int)res));
     }
     return devices;
 }
 
 std::vector<AudioDeviceInfo> AudioClient::GetOutputDevices() {
     std::vector<AudioDeviceInfo> devices;
-    if (!m_context) return devices;
+    if (!m_context) {
+        AudioLog("GetOutputDevices: m_context is NULL");
+        return devices;
+    }
 
     ma_device_info* pPlaybackInfos;
     ma_uint32 playbackCount;
-    if (ma_context_get_devices(m_context, &pPlaybackInfos, &playbackCount, nullptr, nullptr) == MA_SUCCESS) {
+    ma_result res = ma_context_get_devices(m_context, &pPlaybackInfos, &playbackCount, nullptr, nullptr);
+    if (res == MA_SUCCESS) {
+        AudioLog("Found " + std::to_string(playbackCount) + " output devices.");
         for (ma_uint32 i = 0; i < playbackCount; ++i) {
+            AudioLog("  -> " + std::string(pPlaybackInfos[i].name));
             devices.push_back({ pPlaybackInfos[i].name, pPlaybackInfos[i].name, (bool)pPlaybackInfos[i].isDefault });
         }
+    } else {
+        AudioLog("ma_context_get_devices (playback) failed with error: " + std::to_string((int)res));
     }
     return devices;
 }
