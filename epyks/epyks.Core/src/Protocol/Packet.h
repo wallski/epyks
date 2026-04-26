@@ -117,6 +117,16 @@ namespace epyks {
         bool Deserialize(const std::vector<uint8_t>& bytes);
     };
 
+    struct EditChannel {
+        int server_id;
+        int channel_id;
+        std::string name;
+        int type;
+        std::string category;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
     struct DeleteChannel {
         int server_id;
         int channel_id;
@@ -245,6 +255,7 @@ namespace epyks {
         constexpr uint32_t CREATE_CHANNEL = 50;
         constexpr uint32_t DELETE_CHANNEL = 51;
         constexpr uint32_t CHANNEL_LIST = 52;
+        constexpr uint32_t EDIT_CHANNEL = 53;
         
         // Mod
         constexpr uint32_t KICK_USER = 60;

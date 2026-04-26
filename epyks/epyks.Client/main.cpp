@@ -100,6 +100,13 @@ std::string GetConfigPath() {
   return std::string(path) + "\\Epyks\\config.ini";
 }
 
+std::string GetIniPath() {
+  char path[MAX_PATH];
+  GetEnvironmentVariableA("APPDATA", path, MAX_PATH);
+  fs::create_directories(std::string(path) + "\\Epyks");
+  return std::string(path) + "\\Epyks\\imgui.ini";
+}
+
 void SaveConfig(const std::string &username, const std::string &token,
                 const std::string &inDev = "", const std::string &outDev = "") {
   std::ofstream file(GetConfigPath());
@@ -156,6 +163,10 @@ struct ServerChat {
 
 class ChatClient {
 public:
+  ChatClient() {
+      audio.Initialize();
+  }
+
   SOCKET sock = INVALID_SOCKET;
   std::atomic<bool> connected{false};
   std::thread recvThread;
@@ -242,7 +253,7 @@ public:
       udpThread = std::thread(&ChatClient::UdpLoop, this);
     }
 
-    audio.Initialize();
+
 
     recvThread = std::thread(&ChatClient::ReceiveLoop, this);
     return true;
@@ -335,7 +346,7 @@ public:
             myProfile.username = username;
             myProfile.pfp_url = ""; // Will be updated by RequestProfile
             userProfileCache[username] = myProfile;
-            SaveConfig(username, sessionToken, "", "");
+            SaveConfig(username, sessionToken, audio.GetCurrentInputDevice(), audio.GetCurrentOutputDevice());
             RequestMyServers();
             RequestFriendList();
             RequestProfile("", true); // Get our full profile silently
@@ -1120,11 +1131,15 @@ void DrawBrowserIcon(ImVec2 center, float size, ImU32 color) {
 }
 
 void DrawAvatar(const std::string &username, const std::string &pfpUrl,
-                float size) {
+                float size, bool talking = false) {
   ImDrawList *dl = ImGui::GetWindowDrawList();
   ImVec2 c = ImGui::GetCursorScreenPos();
   ImVec2 center = {c.x + size * 0.5f, c.y + size * 0.5f};
   float r = size * 0.5f;
+
+  if (talking) {
+      dl->AddCircle(center, r + 2.0f, ImColor(35, 165, 89), 32, 3.0f);
+  }
 
   bool textureDrawn = false;
   if (!pfpUrl.empty()) {
@@ -1281,14 +1296,14 @@ static void DrawCallView(ChatClient& client) {
             // Background
             d->AddRectFilled(cp, ImVec2(cp.x + cardW, cp.y + cardH), ImColor(43, 45, 49), 12.0f);
             
-            // Talking Ring
-            if (talking && !muted && !deafened) {
-                d->AddRect(cp, ImVec2(cp.x + cardW, cp.y + cardH), ImColor(35, 165, 89), 12.0f, 0, 3.0f);
-            }
+            // Outer Card Talking Ring (Removed as requested, keeping only avatar ring)
+            // if (talking && !muted && !deafened) {
+            //     d->AddRect(cp, ImVec2(cp.x + cardW, cp.y + cardH), ImColor(35, 165, 89), 12.0f, 0, 3.0f);
+            // }
 
             // Avatar
             ImGui::SetCursorPos(ImVec2(cardW*0.5f - 40, 90 - 40));
-            DrawAvatar(name, pfp, 80);
+            DrawAvatar(name, pfp, 80, talking && !muted && !deafened);
             
             // Name
             ImGui::SetCursorPosY(170);
@@ -1413,6 +1428,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
   ImGui::CreateContext();
   ImGuiIO &io = ImGui::GetIO();
   (void)io;
+  static std::string iniPath = GetIniPath();
+  io.IniFilename = iniPath.c_str();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
   AppConfig config;
@@ -2440,29 +2457,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             ImGui::PushItemWidth(400);
             if (ImGui::BeginCombo("##inputdev",
                     inputDevices.empty() ? "No devices" : inputDevices[selectedInputDevice].name.c_str())) {
-              for (int i = 0; i < (int)inputDevices.size(); ++i)
-                if (ImGui::Selectable(inputDevices[i].name.c_str(), selectedInputDevice == i))
+              for (int i = 0; i < (int)inputDevices.size(); ++i) {
+                if (ImGui::Selectable(inputDevices[i].name.c_str(), selectedInputDevice == i)) {
                   selectedInputDevice = i;
+                  client.audio.SetDevices(inputDevices[selectedInputDevice].name, outputDevices[selectedOutputDevice].name);
+                  SaveConfig(client.username, client.sessionToken, inputDevices[selectedInputDevice].name, outputDevices[selectedOutputDevice].name);
+                }
+              }
               ImGui::EndCombo();
             }
             ImGui::Dummy(ImVec2(0, 10));
             ImGui::Text("Output Device");
             if (ImGui::BeginCombo("##outputdev",
                     outputDevices.empty() ? "No devices" : outputDevices[selectedOutputDevice].name.c_str())) {
-              for (int i = 0; i < (int)outputDevices.size(); ++i)
-                if (ImGui::Selectable(outputDevices[i].name.c_str(), selectedOutputDevice == i))
+              for (int i = 0; i < (int)outputDevices.size(); ++i) {
+                if (ImGui::Selectable(outputDevices[i].name.c_str(), selectedOutputDevice == i)) {
                   selectedOutputDevice = i;
+                  client.audio.SetDevices(inputDevices[selectedInputDevice].name, outputDevices[selectedOutputDevice].name);
+                  SaveConfig(client.username, client.sessionToken, inputDevices[selectedInputDevice].name, outputDevices[selectedOutputDevice].name);
+                }
+              }
               ImGui::EndCombo();
             }
             ImGui::PopItemWidth();
-            ImGui::Dummy(ImVec2(0, 20));
-            if (ImGui::Button("Apply Devices", ImVec2(150, 40))) {
-              client.audio.SetDevices(inputDevices[selectedInputDevice].name,
-                                      outputDevices[selectedOutputDevice].name);
-              SaveConfig(client.username, client.sessionToken,
-                         inputDevices[selectedInputDevice].name,
-                         outputDevices[selectedOutputDevice].name);
-            }
+            // Auto-applied on selection
           }
           ImGui::EndGroup();
           ImGui::EndChild();

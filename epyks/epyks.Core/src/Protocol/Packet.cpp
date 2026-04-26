@@ -374,6 +374,44 @@ namespace epyks {
         return true;
     }
 
+    std::vector<uint8_t> EditChannel::Serialize() const {
+        std::vector<uint8_t> result;
+        uint32_t sid = (uint32_t)server_id;
+        uint32_t cid = (uint32_t)channel_id;
+        uint32_t ctype = (uint32_t)type;
+        uint32_t nameLen = (uint32_t)name.size();
+        uint32_t catLen = (uint32_t)category.size();
+        
+        result.resize(20);
+        std::memcpy(result.data(), &sid, 4);
+        std::memcpy(result.data() + 4, &cid, 4);
+        std::memcpy(result.data() + 8, &ctype, 4);
+        std::memcpy(result.data() + 12, &nameLen, 4);
+        std::memcpy(result.data() + 16, &catLen, 4);
+        
+        result.insert(result.end(), name.begin(), name.end());
+        result.insert(result.end(), category.begin(), category.end());
+        return result;
+    }
+
+    bool EditChannel::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 20) return false;
+        uint32_t sid = 0, cid = 0, ctype = 0, nameLen = 0, catLen = 0;
+        std::memcpy(&sid, bytes.data(), 4);
+        std::memcpy(&cid, bytes.data() + 4, 4);
+        std::memcpy(&ctype, bytes.data() + 8, 4);
+        std::memcpy(&nameLen, bytes.data() + 12, 4);
+        std::memcpy(&catLen, bytes.data() + 16, 4);
+        
+        if (bytes.size() != 20 + nameLen + catLen) return false;
+        server_id = sid;
+        channel_id = cid;
+        type = ctype;
+        name.assign(bytes.begin() + 20, bytes.begin() + 20 + nameLen);
+        category.assign(bytes.begin() + 20 + nameLen, bytes.end());
+        return true;
+    }
+
     std::vector<uint8_t> DeleteChannel::Serialize() const {
         std::vector<uint8_t> result;
         result.resize(8);
