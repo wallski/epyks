@@ -49,6 +49,13 @@ public:
     void SetMute(bool muted) { m_isMuted = muted; }
     void SetDeafened(bool deafened) { m_isDeafened = deafened; }
 
+    bool GetVadAuto() const { return m_vadAuto; }
+    void SetVadAuto(bool v) { m_vadAuto = v; }
+    float GetVadThreshold() const { return m_vadThreshold; }
+    void SetVadThreshold(float v) { m_vadThreshold = v; }
+    float GetCurrentLevel() const { return m_currentLevel; }
+
+
 private:
     // miniaudio callback
     static void DataCallback(ma_device* pDevice, void* pOutput, const void* pInput, unsigned int frameCount);
@@ -69,6 +76,12 @@ private:
     std::string m_currentOutputName;
     std::atomic<bool> m_isMuted{false};
     std::atomic<bool> m_isDeafened{false};
+
+    std::atomic<bool> m_vadAuto{true};
+    std::atomic<float> m_vadThreshold{0.05f};
+    std::atomic<float> m_currentLevel{0.0f};
+    std::atomic<float> m_noiseFloor{0.02f};
+
 
     // Buffer for outgoing encoded packets
     std::mutex m_outMutex;

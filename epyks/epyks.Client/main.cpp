@@ -2,9 +2,10 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
+#include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <windows.h>
+
 
 #include "AudioClient.h"
 #include "Protocol/Packet.h"
@@ -20,13 +21,14 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <tchar.h>
 #include <thread>
 #include <tuple>
 #include <vector>
-#include <set>
+
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "comdlg32.lib")
@@ -36,25 +38,34 @@
 static std::set<std::string> g_downloadingPFPs;
 static std::mutex g_downloadingMutex;
 
-bool IsUrl(const std::string& str) {
+bool IsUrl(const std::string &str) {
   return str.find("http://") == 0 || str.find("https://") == 0;
 }
 
-bool IsServerUrl(const std::string& str) {
-  return str.find("server://") == 0;
-}
+bool IsServerUrl(const std::string &str) { return str.find("server://") == 0; }
 
-std::string GetPfpCachePath(const std::string& url) {
+std::string GetPfpCachePath(const std::string &url) {
   size_t hash = std::hash<std::string>{}(url);
   std::string ext = ".png";
-  if (url.find(".jpg") != std::string::npos || url.find(".jpeg") != std::string::npos) ext = ".jpg";
-  if (url.find(".webp") != std::string::npos) ext = ".webp";
-  
+  if (url.find(".jpg") != std::string::npos ||
+      url.find(".jpeg") != std::string::npos)
+    ext = ".jpg";
+  if (url.find(".webp") != std::string::npos)
+    ext = ".webp";
+
   char path[MAX_PATH];
   GetEnvironmentVariableA("APPDATA", path, MAX_PATH);
   std::string dir = std::string(path) + "\\Epyks\\cache";
   std::filesystem::create_directories(dir);
   return dir + "\\" + std::to_string(hash) + ext;
+}
+
+std::string GetMediaCachePath(const std::string &key) {
+  char path[MAX_PATH];
+  GetEnvironmentVariableA("APPDATA", path, MAX_PATH);
+  std::string dir = std::string(path) + "\\Epyks\\media";
+  std::filesystem::create_directories(dir);
+  return dir + "\\" + key;
 }
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -66,6 +77,9 @@ struct TextureInfo {
   int height = 0;
 };
 static std::map<std::string, TextureInfo> g_textureCache;
+static std::set<std::string> g_downloadingMedia;
+static std::string g_zoomImageKey; // key of image to show in zoom modal
+static bool g_showZoomModal = false;
 
 TextureInfo LoadTextureFromFile(const char *filename,
                                 ID3D11Device *pd3dDevice) {
@@ -144,15 +158,8 @@ std::string GetLogPath() {
 }
 
 void LogToFile(const std::string &message) {
-  std::ofstream file(GetLogPath(), std::ios::app);
-  if (file.is_open()) {
-    auto now =
-        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    struct tm ltm;
-    localtime_s(&ltm, &now);
-    file << "[" << std::put_time(&ltm, "%Y-%m-%d %H:%M:%S") << "] " << message
-         << std::endl;
-  }
+  // Debug logging disabled
+  return;
 }
 
 void SaveConfig(const std::string &username, const std::string &token,
@@ -214,9 +221,9 @@ extern ChatClient client;
 
 class ChatClient {
 public:
-  ChatClient() { 
+  ChatClient() {
     audio = std::make_shared<AudioClient>();
-    audio->Initialize(); 
+    audio->Initialize();
   }
 
   SOCKET sock = INVALID_SOCKET;
@@ -261,6 +268,8 @@ public:
   bool showPasswordModal = false;
   int targetServerToJoin = -1;
   char serverPassBuf[64] = {0};
+  std::string pendingMediaUploadUrl; // "uploading" while waiting, then
+                                     // "server-media://key" when done
 
   std::atomic<bool> loginSuccess{false};
   std::atomic<bool> loginFailed{false};
@@ -292,6 +301,27 @@ public:
     req.image_data = imageData;
     epyks::Packet pkg;
     pkg.type = epyks::PacketType::PFP_UPLOAD;
+    auto bytes = req.Serialize();
+    pkg.data = std::string(bytes.begin(), bytes.end());
+    SendPacket(pkg);
+  }
+
+  void SendMediaUpload(const std::vector<uint8_t> &imageData) {
+    epyks::MediaUpload req;
+    req.media_data = imageData;
+    epyks::Packet pkg;
+    pkg.type = epyks::PacketType::MEDIA_UPLOAD;
+    auto bytes = req.Serialize();
+    pkg.data = std::string(bytes.begin(), bytes.end());
+    pendingMediaUploadUrl = "uploading";
+    SendPacket(pkg);
+  }
+
+  void SendMediaRequest(const std::string &filename) {
+    epyks::MediaRequest req;
+    req.filename = filename;
+    epyks::Packet pkg;
+    pkg.type = epyks::PacketType::MEDIA_REQUEST;
     auto bytes = req.Serialize();
     pkg.data = std::string(bytes.begin(), bytes.end());
     SendPacket(pkg);
@@ -492,6 +522,30 @@ public:
             file.write((const char *)resp.image_data.data(),
                        resp.image_data.size());
             file.close();
+          }
+        }
+      } else if (packet.type == epyks::PacketType::MEDIA_RESPONSE) {
+        // Custom packed payload: [4b fnLen][4b dataLen][filename][data]
+        auto bytes =
+            std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+        if (bytes.size() >= 8) {
+          uint32_t fnLen = 0, dataLen = 0;
+          std::memcpy(&fnLen, bytes.data(), 4);
+          std::memcpy(&dataLen, bytes.data() + 4, 4);
+          if (bytes.size() == 8 + fnLen + dataLen) {
+            std::string fname(bytes.begin() + 8, bytes.begin() + 8 + fnLen);
+            std::string cachePath = GetMediaCachePath(fname);
+            std::ofstream f(cachePath, std::ios::binary);
+            if (f.is_open()) {
+              f.write((const char *)bytes.data() + 8 + fnLen, dataLen);
+              f.close();
+            }
+            g_downloadingMedia.erase(fname);
+            // Also if this was a just-uploaded image, store pending URL in
+            // client
+            if (pendingMediaUploadUrl == "uploading") {
+              pendingMediaUploadUrl = "server-media://" + fname;
+            }
           }
         }
       } else if (packet.type == epyks::PacketType::SERVER_MESSAGE) {
@@ -1001,6 +1055,23 @@ public:
     send(sock, (char *)data.data(), len, 0);
   }
 
+  void SendEditChannel(int serverId, int channelId, const std::string &name,
+                       int type, const std::string &category = "") {
+    if (!connected)
+      return;
+    epyks::EditChannel ec;
+    ec.server_id = serverId;
+    ec.channel_id = channelId;
+    ec.name = name;
+    ec.type = type;
+    ec.category = category;
+    std::vector<uint8_t> data = ec.Serialize();
+    epyks::Packet pkt;
+    pkt.type = epyks::PacketType::EDIT_CHANNEL;
+    pkt.data = std::string((char *)data.data(), data.size());
+    SendPacket(pkt);
+  }
+
   void SendDeleteChannel(int serverId, int channelId) {
     if (!connected)
       return;
@@ -1287,7 +1358,8 @@ void DrawAvatar(const std::string &username, const std::string &pfpUrl,
         if (g_downloadingPFPs.find(pfpUrl) == g_downloadingPFPs.end()) {
           g_downloadingPFPs.insert(pfpUrl);
           std::thread([pfpUrl, targetPath]() {
-            URLDownloadToFileA(NULL, pfpUrl.c_str(), targetPath.c_str(), 0, NULL);
+            URLDownloadToFileA(NULL, pfpUrl.c_str(), targetPath.c_str(), 0,
+                               NULL);
             std::lock_guard<std::mutex> lock(g_downloadingMutex);
             g_downloadingPFPs.erase(pfpUrl);
           }).detach();
@@ -1301,12 +1373,15 @@ void DrawAvatar(const std::string &username, const std::string &pfpUrl,
         std::lock_guard<std::mutex> lock(g_downloadingMutex);
         if (g_downloadingPFPs.find(pfpUrl) == g_downloadingPFPs.end()) {
           g_downloadingPFPs.insert(pfpUrl);
-          // We need the username to request it. The URL is server://[username].png
+          // We need the username to request it. The URL is
+          // server://[username].png
           std::string targetUser = pfpUrl.substr(9); // server://
           size_t dot = targetUser.find_last_of('.');
-          if (dot != std::string::npos) targetUser = targetUser.substr(0, dot);
-          
-          // Request on a thread or just call it (SendTo is non-blocking usually)
+          if (dot != std::string::npos)
+            targetUser = targetUser.substr(0, dot);
+
+          // Request on a thread or just call it (SendTo is non-blocking
+          // usually)
           extern ChatClient client; // We need access to the client
           client.RequestPfp(targetUser);
         }
@@ -1317,7 +1392,8 @@ void DrawAvatar(const std::string &username, const std::string &pfpUrl,
     if (!targetPath.empty()) {
       auto it = g_textureCache.find(targetPath);
       if (it == g_textureCache.end()) {
-        TextureInfo info = LoadTextureFromFile(targetPath.c_str(), g_pd3dDevice);
+        TextureInfo info =
+            LoadTextureFromFile(targetPath.c_str(), g_pd3dDevice);
         if (info.srv) {
           g_textureCache[targetPath] = info;
           it = g_textureCache.find(targetPath);
@@ -1719,20 +1795,26 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     }
 
     if (showSettings && inputDevices.empty()) {
-        inputDevices = client.audio->GetInputDevices();
-        outputDevices = client.audio->GetOutputDevices();
-        
-        // Find selected indices
-        std::string currentIn = client.audio->GetCurrentInputDevice();
-        std::string currentOut = client.audio->GetCurrentOutputDevice();
-        for (int i = 0; i < (int)inputDevices.size(); ++i) {
-            if (inputDevices[i].name == currentIn) { selectedInputDevice = i; break; }
+      inputDevices = client.audio->GetInputDevices();
+      outputDevices = client.audio->GetOutputDevices();
+
+      // Find selected indices
+      std::string currentIn = client.audio->GetCurrentInputDevice();
+      std::string currentOut = client.audio->GetCurrentOutputDevice();
+      for (int i = 0; i < (int)inputDevices.size(); ++i) {
+        if (inputDevices[i].name == currentIn) {
+          selectedInputDevice = i;
+          break;
         }
-        for (int i = 0; i < (int)outputDevices.size(); ++i) {
-            if (outputDevices[i].name == currentOut) { selectedOutputDevice = i; break; }
+      }
+      for (int i = 0; i < (int)outputDevices.size(); ++i) {
+        if (outputDevices[i].name == currentOut) {
+          selectedOutputDevice = i;
+          break;
         }
+      }
     } else if (!showSettings) {
-        inputDevices.clear(); // Reset so it refreshes next time
+      inputDevices.clear(); // Reset so it refreshes next time
     }
 
     if (client.loginSuccess) {
@@ -2096,29 +2178,31 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 
         ImGui::Dummy(ImVec2(0, 8));
         ImGui::SetCursorPosX(8);
-        if (drawSelectable("  Friends", currentDM == "friends_dashboard",
-                           ImVec2(224, 40))) {
+        bool friendsSelected = (currentDM == "friends_dashboard");
+        ImVec4 friendsBtnCol = friendsSelected
+                                   ? config.accentColor
+                                   : ImVec4(0.22f, 0.23f, 0.27f, 1.0f);
+        ImVec4 friendsBtnHov = friendsSelected
+                                   ? ImVec4(config.accentColor.x * 1.1f,
+                                            config.accentColor.y * 1.1f,
+                                            config.accentColor.z * 1.1f, 1.0f)
+                                   : ImVec4(0.28f, 0.29f, 0.34f, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, friendsBtnCol);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, friendsBtnHov);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, config.accentColor);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12, 8));
+        if (ImGui::Button("Friends", ImVec2(224, 38))) {
           currentDM = "friends_dashboard";
           client.showVoiceCallWindow = false;
         }
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(3);
 
         ImGui::Dummy(ImVec2(0, 16));
         ImGui::SetCursorPosX(16);
         ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("DIRECT MESSAGES");
-        ImGui::SameLine();
-        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 30);
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.8f, 0.8f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                              ImVec4(0.4f, 0.4f, 1.0f, 1.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
-        if (ImGui::Button("+##adddm", ImVec2(20, 20))) {
-          currentDM = "friends_dashboard";
-          friendsTab = 2;
-        }
-        ImGui::PopStyleVar(2);
-        ImGui::PopStyleColor(2);
         ImGui::Separator();
 
         std::lock_guard<std::mutex> dmLock(client.friendsMutex);
@@ -2224,6 +2308,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
       ImGui::PushStyleColor(ImGuiCol_ChildBg,
                             ImVec4(0.14f, 0.15f, 0.16f, 1.0f));
 
+      ImVec2 summaryStart = ImGui::GetCursorPos();
+
       ImGui::SetCursorPos(ImVec2(8, 10));
       DrawAvatar(client.username, client.myProfile.pfp_url, 32);
       ImGui::SameLine(48);
@@ -2235,6 +2321,15 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
       ImGui::SetWindowFontScale(1.0f);
       ImGui::PopStyleVar();
       ImGui::EndGroup();
+
+      // Invisible button covering the avatar and name
+      ImVec2 summaryEnd = ImGui::GetCursorPos();
+      ImGui::SetCursorPos(summaryStart);
+      if (ImGui::InvisibleButton("##user_summary_btn", ImVec2(160, 40))) {
+        client.RequestProfile(client.username);
+      }
+      ImGui::SetCursorPos(summaryEnd);
+
       ImGui::SameLine(175);
       ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
       ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.1f));
@@ -2497,13 +2592,62 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             ImGui::SameLine(64);
             ImGui::BeginGroup();
             ImGui::TextColored(config.accentColor, "%s", user.c_str());
+            if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(0))
+              client.RequestProfile(user);
             ImGui::SameLine();
             ImGui::TextDisabled("%s", timeStr.c_str());
-            ImGui::TextWrapped("%s", content.c_str());
-            ImGui::EndGroup();
-            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
-              client.RequestProfile(user);
+            // Check if content is a media link
+            if (content.find("server-media://") == 0) {
+              std::string mediaKey =
+                  content.substr(15); // strip "server-media://"
+              std::string cachePath = GetMediaCachePath(mediaKey);
+              bool cached = std::filesystem::exists(cachePath);
+              if (!cached && g_downloadingMedia.find(mediaKey) ==
+                                 g_downloadingMedia.end()) {
+                g_downloadingMedia.insert(mediaKey);
+                client.SendMediaRequest(mediaKey);
+              }
+              if (cached) {
+                auto it = g_textureCache.find(cachePath);
+                if (it == g_textureCache.end()) {
+                  TextureInfo info =
+                      LoadTextureFromFile(cachePath.c_str(), g_pd3dDevice);
+                  if (info.srv) {
+                    g_textureCache[cachePath] = info;
+                    it = g_textureCache.find(cachePath);
+                  }
+                }
+                if (it != g_textureCache.end() && it->second.srv) {
+                  // Display max 400px wide, maintain aspect ratio
+                  float maxW = 400.0f;
+                  float w = (float)it->second.width;
+                  float h = (float)it->second.height;
+                  if (w > maxW) {
+                    h = h * maxW / w;
+                    w = maxW;
+                  }
+                  ImVec2 imgSize(w, h);
+                  ImGui::Image(it->second.srv, imgSize);
+                  if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Click to zoom");
+                  if (ImGui::IsItemClicked()) {
+                    g_zoomImageKey = cachePath;
+                    g_showZoomModal = true;
+                  }
+                } else {
+                  ImGui::TextDisabled("[Downloading image...]");
+                }
+              } else {
+                ImGui::TextDisabled("[Downloading image...]");
+              }
+            } else {
+              ImGui::TextWrapped("%s", content.c_str());
             }
+            ImGui::EndGroup();
+            if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(0)) {
+              // clicking message body also opens profile
+            }
+
             ImGui::EndGroup();
             ImGui::Dummy(ImVec2(0, 12));
           }
@@ -2511,16 +2655,65 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             ImGui::SetScrollHereY(1.0f);
           ImGui::EndChild();
 
-          ImGui::SetCursorPos(ImVec2(16, ImGui::GetWindowHeight() - 48));
-          ImGui::PushItemWidth(-16);
-          if (ImGui::InputText("##channelinput", inputBuf, 256,
-                               ImGuiInputTextFlags_EnterReturnsTrue)) {
+          // [+] Media upload button + chat input
+          float inputY = ImGui::GetWindowHeight() - 52;
+          ImGui::SetCursorPos(ImVec2(8, inputY));
+          ImGui::PushStyleColor(ImGuiCol_Button,
+                                ImVec4(0.25f, 0.26f, 0.30f, 1.0f));
+          ImGui::PushStyleColor(ImGuiCol_ButtonHovered, config.accentColor);
+          ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+          if (ImGui::Button("+##mediabtn", ImVec2(36, 36))) {
+            // Open file dialog
+            OPENFILENAMEA ofn;
+            char szFile[260] = {0};
+            ZeroMemory(&ofn, sizeof(ofn));
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = nullptr;
+            ofn.lpstrFile = szFile;
+            ofn.nMaxFile = sizeof(szFile);
+            ofn.lpstrFilter =
+                "Images\0*.jpg;*.jpeg;*.png;*.gif;*.webp\0All Files\0*.*\0";
+            ofn.nFilterIndex = 1;
+            ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+            if (GetOpenFileNameA(&ofn)) {
+              std::ifstream file(szFile, std::ios::binary);
+              if (file.is_open()) {
+                std::vector<uint8_t> imgData(
+                    std::istreambuf_iterator<char>(file), {});
+                client.SendMediaUpload(imgData);
+              }
+            }
+          }
+          ImGui::PopStyleVar();
+          ImGui::PopStyleColor(2);
+          ImGui::SameLine(0, 6);
+          ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - 8);
+          if (!client.pendingMediaUploadUrl.empty() &&
+              client.pendingMediaUploadUrl != "uploading") {
+            // Automatically send the media URL as the message
             client.SendServerMessage(client.currentServerId,
-                                     client.currentChannelId, inputBuf);
-            inputBuf[0] = '\0';
-            ImGui::SetKeyboardFocusHere(-1);
+                                     client.currentChannelId,
+                                     client.pendingMediaUploadUrl);
+            client.pendingMediaUploadUrl.clear();
+          }
+          if (client.pendingMediaUploadUrl == "uploading") {
+            ImGui::BeginDisabled();
+            char uploadingBuf[] = "Uploading...";
+            ImGui::InputText("##channelinput", uploadingBuf,
+                             sizeof(uploadingBuf),
+                             ImGuiInputTextFlags_ReadOnly);
+            ImGui::EndDisabled();
+          } else {
+            if (ImGui::InputText("##channelinput", inputBuf, 256,
+                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+              client.SendServerMessage(client.currentServerId,
+                                       client.currentChannelId, inputBuf);
+              inputBuf[0] = '\0';
+              ImGui::SetKeyboardFocusHere(-1);
+            }
           }
           ImGui::PopItemWidth();
+
         } else if (channelType == 1) { // Voice Channel
           ImGui::SetCursorPos(ImVec2(100, 100));
           if (client.inVoice &&
@@ -2745,23 +2938,26 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             ImGui::InputTextMultiline("##bio", bioBuf, 1024, ImVec2(500, 100));
             ImGui::Dummy(ImVec2(0, 10));
             ImGui::Text("Profile Picture");
-            
+
             // Show current PFP in settings
             DrawAvatar(client.username, client.myProfile.pfp_url, 64);
             ImGui::SameLine();
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 12);
             if (ImGui::Button("Upload New PFP", ImVec2(150, 40))) {
-                std::string path = PickLocalFile();
-                if (!path.empty()) {
-                    std::ifstream file(path, std::ios::binary);
-                    if (file.is_open()) {
-                        std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-                        client.UploadPfp(data);
-                    }
+              std::string path = PickLocalFile();
+              if (!path.empty()) {
+                std::ifstream file(path, std::ios::binary);
+                if (file.is_open()) {
+                  std::vector<uint8_t> data(
+                      (std::istreambuf_iterator<char>(file)),
+                      std::istreambuf_iterator<char>());
+                  client.UploadPfp(data);
                 }
+              }
             }
-            ImGui::TextDisabled("Selected file will be uploaded directly to the Epyks server.");
-            
+            ImGui::TextDisabled(
+                "Selected file will be uploaded directly to the Epyks server.");
+
             ImGui::Dummy(ImVec2(0, 20));
             if (ImGui::Button("Save Bio", ImVec2(120, 40))) {
               client.SendProfileUpdate(bioBuf, client.myProfile.pfp_url);
@@ -2815,10 +3011,49 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             }
             ImGui::SameLine();
             if (ImGui::Button("Refresh")) {
-                inputDevices.clear(); // Forces a refresh on next frame
+              inputDevices.clear(); // Forces a refresh on next frame
             }
             ImGui::PopItemWidth();
-            // Auto-applied on selection
+
+            ImGui::Dummy(ImVec2(0, 20));
+            ImGui::Text("Input Sensitivity");
+            ImGui::Separator();
+            ImGui::Dummy(ImVec2(0, 10));
+
+            bool vadAuto = client.audio->GetVadAuto();
+            if (ImGui::Checkbox("Automatically determine input sensitivity",
+                                &vadAuto)) {
+              client.audio->SetVadAuto(vadAuto);
+            }
+
+            ImGui::Dummy(ImVec2(0, 10));
+            float currentLevel = client.audio->GetCurrentLevel() * 100.0f;
+            float threshold = client.audio->GetVadThreshold() * 100.0f;
+
+            float sliderWidth = 0.0f;
+            if (vadAuto) {
+              ImGui::BeginDisabled();
+              ImGui::SliderFloat("##threshold", &threshold, 0.0f, 10.0f,
+                                 "%.2f%%");
+              sliderWidth = ImGui::GetItemRectSize().x;
+              ImGui::EndDisabled();
+            } else {
+              if (ImGui::SliderFloat("##threshold", &threshold, 0.0f, 10.0f,
+                                     "%.2f%%")) {
+                client.audio->SetVadThreshold(threshold / 100.0f);
+              }
+              sliderWidth = ImGui::GetItemRectSize().x;
+            }
+
+            // Render level indicator
+            ImGui::Dummy(ImVec2(0, 5));
+            ImVec4 barColor = (currentLevel > threshold)
+                                  ? ImVec4(0.22f, 0.65f, 0.35f, 1.0f)
+                                  : ImVec4(0.85f, 0.65f, 0.13f, 1.0f);
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, barColor);
+            ImGui::ProgressBar(currentLevel / 10.0f, ImVec2(sliderWidth, 15),
+                               "");
+            ImGui::PopStyleColor();
           }
           ImGui::EndGroup();
           ImGui::EndChild();
@@ -2935,7 +3170,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
               ImGui::OpenPopup("Create Channel Modal");
             }
 
-            if (ImGui::BeginPopupModal("Create Channel Modal", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            if (ImGui::BeginPopupModal("Create Channel Modal", nullptr,
+                                       ImGuiWindowFlags_AlwaysAutoResize)) {
               ImGui::Dummy(ImVec2(0, 8));
               ImGui::Text(inlineFormIsCategory ? "Category Name"
                                                : "Channel Name");
@@ -3008,23 +3244,43 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             ImGui::Dummy(ImVec2(0, 10));
             for (int i = 0; i < (int)server.channels.size(); ++i) {
               auto &ch = server.channels[i];
-              ImGui::Text("%s", ch.name.c_str());
+              std::string icon =
+                  (ch.type == 2)
+                      ? "[Category]"
+                      : (ch.type == 1 ? "\xef\x80\xa6 " : "\xef\x8a\x92 ");
+              std::string chDisplayName = icon + " " + ch.name;
+              if (ch.type != 2 && !ch.category.empty()) {
+                chDisplayName =
+                    "    " + chDisplayName + " (in " + ch.category + ")";
+              }
+
+              ImGui::Text("%s", chDisplayName.c_str());
               ImGui::SameLine(300);
+
               if (ImGui::Button(("Edit##" + std::to_string(ch.id)).c_str())) {
-                showInlineChannelForm = true;
-                inlineFormIsCategory = false;
+                ImGui::OpenPopup(
+                    ("EditDropdown##" + std::to_string(ch.id)).c_str());
                 strcpy_s(inlineChName, ch.name.c_str());
-                inlineChType = ch.type;
-                // Set category if it belongs to one
-                for (int idx = 0; idx < (int)catOpts.size(); idx++)
-                  if (catOpts[idx] == ch.category)
-                    inlineChCatIdx = idx;
               }
               ImGui::SameLine();
               if (ImGui::Button(("Delete##" + std::to_string(ch.id)).c_str())) {
                 client.SendDeleteChannel(client.currentServerId, ch.id);
                 server.channels.erase(server.channels.begin() + i);
                 break;
+              }
+
+              if (ImGui::BeginPopup(
+                      ("EditDropdown##" + std::to_string(ch.id)).c_str())) {
+                ImGui::Text(ch.type == 2 ? "Edit Category Name:"
+                                         : "Edit Channel Name:");
+                ImGui::InputText("##editname", inlineChName, 64);
+                if (ImGui::Button("Save")) {
+                  client.SendEditChannel(client.currentServerId, ch.id,
+                                         inlineChName, ch.type, ch.category);
+                  ch.name = inlineChName;
+                  ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
               }
             }
           } else if (serverSettingsTab == 2) {
@@ -3171,11 +3427,14 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 
       if (showBrowseServers)
         ImGui::OpenPopup("Browse Servers");
-      ImGui::SetNextWindowSize(ImVec2(500, 400));
+      ImGui::SetNextWindowSize(ImVec2(540, 420));
       if (ImGui::BeginPopupModal("Browse Servers", &showBrowseServers,
                                  ImGuiWindowFlags_NoResize)) {
         ImGui::Dummy(ImVec2(0, 10));
         static bool sentReq = false;
+        static int expandedPassServerId =
+            -1; // which server is showing password input
+        static char inlinePassBuf[64] = {0};
         if (!sentReq) {
           client.SendListServers();
           sentReq = true;
@@ -3191,22 +3450,42 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             ImGui::SameLine();
             ImGui::TextDisabled("(Locked)");
           }
-          ImGui::SameLine(400);
-          if (ImGui::Button(("Join##" + std::to_string(sid)).c_str())) {
+          ImGui::SameLine(420);
+          std::string btnLabel = "Join##" + std::to_string(sid);
+          if (ImGui::Button(btnLabel.c_str(), ImVec2(80, 0))) {
             if (hasPass) {
-              client.targetServerToJoin = sid;
-              client.showPasswordModal = true;
-              client.serverPassBuf[0] = '\0';
+              expandedPassServerId = (expandedPassServerId == sid) ? -1 : sid;
+              memset(inlinePassBuf, 0, sizeof(inlinePassBuf));
             } else {
               client.SendJoinServer(sid);
+              showBrowseServers = false;
+              sentReq = false;
+              ImGui::CloseCurrentPopup();
+            }
+          }
+          // Inline password row
+          if (hasPass && expandedPassServerId == sid) {
+            ImGui::SetCursorPosX(20);
+            ImGui::PushItemWidth(300);
+            ImGui::InputText(("##pass_" + std::to_string(sid)).c_str(),
+                             inlinePassBuf, 64, ImGuiInputTextFlags_Password);
+            ImGui::PopItemWidth();
+            ImGui::SameLine();
+            if (ImGui::Button(("Confirm##" + std::to_string(sid)).c_str())) {
+              client.SendJoinServer(sid, inlinePassBuf);
+              expandedPassServerId = -1;
+              showBrowseServers = false;
+              sentReq = false;
+              ImGui::CloseCurrentPopup();
             }
           }
           ImGui::Separator();
         }
-        ImGui::SetCursorPos(ImVec2(20, 350));
+        ImGui::SetCursorPos(ImVec2(20, 370));
         if (ImGui::Button("Close", ImVec2(100, 30))) {
           showBrowseServers = false;
           sentReq = false;
+          expandedPassServerId = -1;
           ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -3366,25 +3645,49 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
       }
     }
 
-    if (client.showPasswordModal) {
-      ImGui::OpenPopup("Enter Password");
-      client.showPasswordModal = false;
+    if (g_showZoomModal) {
+      ImGui::OpenPopup("Image Zoom");
     }
 
-    if (ImGui::BeginPopupModal("Enter Password", NULL,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-      ImGui::Text("This server is password protected.");
-      ImGui::InputText("Password", client.serverPassBuf, 64,
-                       ImGuiInputTextFlags_Password);
-      if (ImGui::Button("Join", ImVec2(120, 0))) {
-        client.SendJoinServer(client.targetServerToJoin, client.serverPassBuf);
+    if (ImGui::BeginPopupModal(
+            "Image Zoom", &g_showZoomModal,
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoTitleBar |
+                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                ImGuiWindowFlags_NoBackground)) {
+
+      if (!g_showZoomModal)
         ImGui::CloseCurrentPopup();
-        showBrowseServers = false;
+
+      ImVec2 dispSize = ImGui::GetIO().DisplaySize;
+      ImGui::SetWindowPos(ImVec2(0, 0));
+      ImGui::SetWindowSize(dispSize);
+
+      auto it = g_textureCache.find(g_zoomImageKey);
+      if (it != g_textureCache.end() && it->second.srv) {
+        float maxW = dispSize.x * 0.9f;
+        float maxH = dispSize.y * 0.9f;
+        float w = (float)it->second.width;
+        float h = (float)it->second.height;
+        if (w > maxW) {
+          h = h * maxW / w;
+          w = maxW;
+        }
+        if (h > maxH) {
+          w = w * maxH / h;
+          h = maxH;
+        }
+
+        ImVec2 imgSize(w, h);
+        ImGui::SetCursorPos(
+            ImVec2((dispSize.x - w) / 2.0f, (dispSize.y - h) / 2.0f));
+        ImGui::Image(it->second.srv, imgSize);
       }
-      ImGui::SameLine();
-      if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+
+      if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
+        g_showZoomModal = false;
         ImGui::CloseCurrentPopup();
       }
+
       ImGui::EndPopup();
     }
 

@@ -9,17 +9,8 @@
 #include <iomanip>
 
 static void AudioLog(const std::string& msg) {
-    char path[MAX_PATH];
-    if (GetEnvironmentVariableA("APPDATA", path, MAX_PATH)) {
-        std::string logPath = std::string(path) + "\\Epyks\\client_log.txt";
-        std::ofstream logFile(logPath, std::ios::app);
-        if (logFile.is_open()) {
-            auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-            struct tm buf;
-            localtime_s(&buf, &now);
-            logFile << "[" << std::put_time(&buf, "%H:%M:%S") << "] [Audio] " << msg << std::endl;
-        }
-    }
+    // Debug logging disabled
+    return;
 }
 
 AudioClient::AudioClient()
@@ -284,18 +275,52 @@ void AudioClient::ProcessAudio(void* pOutput, const void* pInput, unsigned int f
             sumSquare += (long long)pcmInput[i] * pcmInput[i];
         }
         double rms = sqrt((double)sumSquare / frameCount);
-        m_isSpeaking = (rms > 500.0); // Threshold for speaking detection
+        
+        float level = (float)(rms / 32768.0);
+        m_currentLevel = level;
 
-        unsigned char cbits[MAX_PACKET_SIZE];
-        // Ensure frameCount matches Opus expected frame size
-        int nbBytes = opus_encode(m_encoder, pcmInput, frameCount, cbits, MAX_PACKET_SIZE);
-        if (nbBytes > 0) {
-            std::vector<uint8_t> encodedPacket(cbits, cbits + nbBytes);
-            std::lock_guard<std::mutex> lock(m_outMutex);
-            m_outQueue.push(encodedPacket);
+        static int vadHoldCount = 0;
+
+        if (m_vadAuto) {
+            // Update noise floor only if the current level is close to the noise floor, 
+            // or slowly decay the noise floor if it's too high.
+            if (level < m_noiseFloor * 2.5f) {
+                // Background noise: track it quickly
+                m_noiseFloor = m_noiseFloor * 0.99f + level * 0.01f;
+            } else {
+                // Voice detected: decay noise floor very slowly so it doesn't get dragged up by speaking
+                m_noiseFloor = m_noiseFloor * 0.999f + 0.001f * 0.0001f;
+            }
+            
+            // Target threshold is dynamically above the noise floor
+            float targetThreshold = m_noiseFloor * 4.0f + 0.005f;
+            
+            // Clamp target threshold to a reasonable range
+            if (targetThreshold < 0.002f) targetThreshold = 0.002f;
+            if (targetThreshold > 0.1f) targetThreshold = 0.1f;
+            m_vadThreshold = targetThreshold;
+        }
+        
+        if (level > m_vadThreshold) {
+            vadHoldCount = 20; // Hold for ~20 frames
+        }
+        
+        m_isSpeaking = (vadHoldCount > 0);
+        if (vadHoldCount > 0) vadHoldCount--;
+
+        if (m_isSpeaking) {
+            unsigned char cbits[MAX_PACKET_SIZE];
+            // Ensure frameCount matches Opus expected frame size
+            int nbBytes = opus_encode(m_encoder, pcmInput, frameCount, cbits, MAX_PACKET_SIZE);
+            if (nbBytes > 0) {
+                std::vector<uint8_t> encodedPacket(cbits, cbits + nbBytes);
+                std::lock_guard<std::mutex> lock(m_outMutex);
+                m_outQueue.push(encodedPacket);
+            }
         }
     } else {
         m_isSpeaking = false;
+        m_currentLevel = 0.0f;
     }
 
     // 2. Process Playback (m_inQueue -> Decode -> Output)
