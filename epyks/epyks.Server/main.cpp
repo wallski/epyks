@@ -22,6 +22,12 @@ struct Client {
     std::string username;
     bool hasUsername = false;
     bool authenticated = false;
+    
+    // Voice tracking
+    int currentVoiceServerId = -1;
+    int currentVoiceChannelId = -1;
+    sockaddr_in udpAddr = {};
+    bool hasUdpAddr = false;
 };
 
 class ChatServer {
@@ -35,6 +41,9 @@ class ChatServer {
     ServerGUI* gui = nullptr;
     Database* db = nullptr;
     int port = 9001;
+
+    SOCKET udpSocket = INVALID_SOCKET;
+    std::thread udpThread;
 
 public:
     void SetGUI(ServerGUI* g) { gui = g; }
@@ -81,6 +90,20 @@ public:
         running = true;
         accepting = true;
 
+        udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (udpSocket != INVALID_SOCKET) {
+            int optUdp = 1;
+            setsockopt(udpSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&optUdp, sizeof(optUdp));
+            if (bind(udpSocket, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+                if (gui) gui->AddLog("[Error] Failed to bind UDP port " + std::to_string(port));
+                closesocket(udpSocket);
+                udpSocket = INVALID_SOCKET;
+            } else {
+                if (gui) gui->AddLog("UDP Server listening on port " + std::to_string(port));
+                udpThread = std::thread(&ChatServer::UdpLoop, this);
+            }
+        }
+
         threads.emplace_back(&ChatServer::AcceptLoop, this);
         return true;
     }
@@ -90,6 +113,7 @@ public:
         running = false;
 
         closesocket(listenSocket);
+        if (udpSocket != INVALID_SOCKET) closesocket(udpSocket);
 
         {
             std::lock_guard<std::mutex> lock(clientsMutex);
@@ -101,6 +125,7 @@ public:
         for (auto& t : threads) {
             if (t.joinable()) t.join();
         }
+        if (udpThread.joinable()) udpThread.join();
 
         WSACleanup();
     }
@@ -122,10 +147,53 @@ public:
 
             {
                 std::lock_guard<std::mutex> lock(clientsMutex);
-                clients.push_back({ clientSocket, "", false, false });
+                Client newClient;
+                newClient.socket = clientSocket;
+                newClient.hasUsername = false;
+                newClient.authenticated = false;
+                clients.push_back(newClient);
             }
 
             threads.emplace_back(&ChatServer::HandleClient, this, clientSocket);
+        }
+    }
+
+    void UdpLoop() {
+        char buffer[4096];
+        sockaddr_in senderAddr;
+        int senderLen = sizeof(senderAddr);
+        
+        while (running) {
+            int bytes = recvfrom(udpSocket, buffer, sizeof(buffer), 0, (sockaddr*)&senderAddr, &senderLen);
+            if (bytes > 0) {
+                std::vector<uint8_t> data(buffer, buffer + bytes);
+                epyks::VoiceData pkt;
+                if (pkt.Deserialize(data)) {
+                    std::lock_guard<std::mutex> lock(clientsMutex);
+                    
+                    // Verify sender and update UDP endpoint
+                    bool senderVerified = false;
+                    for (auto& c : clients) {
+                        if (c.authenticated && c.username == pkt.username && 
+                            c.currentVoiceServerId == pkt.server_id && c.currentVoiceChannelId == pkt.channel_id) {
+                            c.udpAddr = senderAddr;
+                            c.hasUdpAddr = true;
+                            senderVerified = true;
+                            break;
+                        }
+                    }
+
+                    // Route to participants
+                    if (senderVerified) {
+                        for (auto& c : clients) {
+                            if (c.authenticated && c.hasUdpAddr && c.username != pkt.username && 
+                                c.currentVoiceServerId == pkt.server_id && c.currentVoiceChannelId == pkt.channel_id) {
+                                sendto(udpSocket, buffer, bytes, 0, (sockaddr*)&c.udpAddr, sizeof(c.udpAddr));
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -405,96 +473,104 @@ public:
                     SendTo(sock, response);
                 }
             }
-            else if (packet.type == epyks::PacketType::CREATE_GROUP) {
-                epyks::CreateGroup req;
+            else if (packet.type == epyks::PacketType::CREATE_SERVER) {
+                epyks::CreateServer req;
                 auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
                 if (req.Deserialize(bytes) && db) {
-                    if (db->CreateGroup(req.group_name, username)) {
-                        int groupId = db->GetGroupByName(req.group_name);
-                        db->JoinGroup(username, groupId);
-                        epyks::JoinGroup joinResp;
-                        joinResp.group_id = groupId;
+                    if (db->CreateServer(req.server_name, username, req.password)) {
+                        int serverId = db->GetServerByName(req.server_name);
+                        
+                        epyks::JoinServer joinResp;
+                        joinResp.server_id = serverId;
                         auto joinBytes = joinResp.Serialize();
                         epyks::Packet joinNotify;
-                        joinNotify.type = epyks::PacketType::JOIN_GROUP;
+                        joinNotify.type = epyks::PacketType::JOIN_SERVER;
                         joinNotify.data = std::string(joinBytes.begin(), joinBytes.end());
                         SendTo(sock, joinNotify);
+                        
                         epyks::Packet notify;
-                        notify.type = epyks::PacketType::CREATE_GROUP;
-                        notify.data = "Group '" + req.group_name + "' created successfully";
+                        notify.type = epyks::PacketType::CREATE_SERVER;
+                        notify.data = "Server '" + req.server_name + "' created successfully";
                         SendTo(sock, notify);
-                        if (gui) gui->AddLog("[" + username + "] created group [" + req.group_name + "]");
+                        if (gui) gui->AddLog("[" + username + "] created server [" + req.server_name + "]");
                     }
                     else {
-                        if (gui) gui->AddLog("[DEBUG] CreateGroup failed - name: " + req.group_name + " owner: " + username);
+                        if (gui) gui->AddLog("[DEBUG] CreateServer failed - name: " + req.server_name + " owner: " + username);
                         epyks::Packet notify;
-                        notify.type = epyks::PacketType::CREATE_GROUP;
-                        notify.data = "Failed to create group '" + req.group_name + "'";
+                        notify.type = epyks::PacketType::CREATE_SERVER;
+                        notify.data = "Failed to create server '" + req.server_name + "'";
                         SendTo(sock, notify);
                     }
                 }
-			}
-            else if (packet.type == epyks::PacketType::JOIN_GROUP) {
-                epyks::JoinGroup req;
-				auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+ 			}
+            else if (packet.type == epyks::PacketType::JOIN_SERVER) {
+                epyks::JoinServer req;
+ 				auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
                 if (req.Deserialize(bytes) && db) {
-                    if (db->JoinGroup(username, req.group_id)) {
-                        epyks::JoinGroup resp;
-                        resp.group_id = req.group_id;
+                    if (db->JoinServer(username, req.server_id, req.password)) {
+                        epyks::JoinServer resp;
+                        resp.server_id = req.server_id;
                         auto respBytes = resp.Serialize();
 
                         epyks::Packet notify;
-                        notify.type = epyks::PacketType::JOIN_GROUP;
+                        notify.type = epyks::PacketType::JOIN_SERVER;
                         notify.data = std::string(respBytes.begin(), respBytes.end());
                         SendTo(sock, notify);
-                        if (gui) gui->AddLog("[" + username + "] joined the group");
+                        if (gui) gui->AddLog("[" + username + "] joined the server");
                     }
                     else {
                         epyks::Packet notify;
-                        notify.type = epyks::PacketType::JOIN_GROUP;
-                        notify.data = "Failed to join group";
+                        notify.type = epyks::PacketType::JOIN_SERVER;
+                        notify.data = "Failed to join server";
                         SendTo(sock, notify);
                     }
                 }
             }
-            else if (packet.type == epyks::PacketType::LEAVE_GROUP) {
-                epyks::LeaveGroup req;
+            else if (packet.type == epyks::PacketType::LEAVE_SERVER) {
+                epyks::LeaveServer req;
                 auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
                 if (req.Deserialize(bytes) && db) {
-                    if (db->LeaveGroup(username, req.group_id)) {
+                    if (db->LeaveServer(username, req.server_id)) {
                         epyks::Packet notify;
-                        notify.type = epyks::PacketType::LEAVE_GROUP;
-                        notify.data = "Left Group successfully";
+                        notify.type = epyks::PacketType::LEAVE_SERVER;
+                        notify.data = "Left Server successfully";
                         SendTo(sock, notify);
-                        if (gui) gui->AddLog("[" + username + "] left the group");
+                        if (gui) gui->AddLog("[" + username + "] left the server");
                     }
                     else {
                         epyks::Packet notify;
-                        notify.type = epyks::PacketType::LEAVE_GROUP;
-                        notify.data = "Failed to leave group";
+                        notify.type = epyks::PacketType::LEAVE_SERVER;
+                        notify.data = "Failed to leave server";
                         SendTo(sock, notify);
                     }
                 }
             }
-            else if (packet.type == epyks::PacketType::GROUP_MESSAGE) {
-                epyks::GroupMessage req;
-                
+            else if (packet.type == epyks::PacketType::SERVER_MESSAGE) {
+                epyks::ServerMessage req;
                 auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
                 if (req.Deserialize(bytes) && db) {
-                    auto members = db->GetGroupMembers(req.group_id);
+                    if (db->IsMuted(req.server_id, username)) {
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::SERVER_MESSAGE;
+                        notify.data = "System: You are muted in this server.";
+                        SendTo(sock, notify);
+                        continue;
+                    }
+                    
+                    auto members = db->GetServerMembers(req.server_id);
 
-                    epyks::GroupMessage forward;
-                    forward.group_id = req.group_id;
+                    epyks::ServerMessage forward;
+                    forward.server_id = req.server_id;
+                    forward.channel_id = req.channel_id;
                     forward.content = username + ": " + req.content;
                     auto forwardBytes = forward.Serialize();
-
 
                     std::lock_guard<std::mutex> lock(clientsMutex);
                     for (const auto& member : members) {
                         for (auto& c : clients) {
-                            if (c.username == member) {
+                            if (c.username == member.first) {
                                 epyks::Packet notify;
-                                notify.type = epyks::PacketType::GROUP_MESSAGE;
+                                notify.type = epyks::PacketType::SERVER_MESSAGE;
                                 notify.data = std::string(forwardBytes.begin(), forwardBytes.end());
                                 SendTo(c.socket, notify);
                                 break;
@@ -503,29 +579,171 @@ public:
                     }
                 }
             }
-            else if (packet.type == epyks::PacketType::LIST_GROUPS) {
-                auto list = db->GetAllGroups();
-                std::string result;
-                for (auto& c : list) {
-                    result += std::to_string(c.first) + ":" + c.second + ",";
+            else if (packet.type == epyks::PacketType::LIST_SERVERS) {
+                if (db) {
+                    auto list = db->GetAllServers();
+                    std::string result;
+                    for (auto& c : list) {
+                        result += std::to_string(c.first) + ":" + c.second + ",";
+                    }
+                    epyks::Packet notify;
+                    notify.type = epyks::PacketType::LIST_SERVERS;
+                    notify.data = result;
+                    SendTo(sock, notify);
                 }
-                epyks::Packet notify;
-                notify.type = epyks::PacketType::LIST_GROUPS;
-                notify.data = result;
-                SendTo(sock, notify);
+            }
+            else if (packet.type == epyks::PacketType::MY_SERVERS) {
+                if (db) {
+                    auto servers = db->GetUserServers(username);
+                    std::string payload;
+                    for (auto& s : servers) {
+                        payload += std::to_string(s.first) + ":" + s.second + ",";
+                    }
+                    epyks::Packet notify;
+                    notify.type = epyks::PacketType::MY_SERVERS;
+                    notify.data = payload;
+                    SendTo(sock, notify);
                 }
-            else if (packet.type == epyks::PacketType::MY_GROUPS) {
-                    if (db) {
-                        auto groups = db->GetUserGroups(username);
-                        std::string payload;
-                        for (auto& g : groups) {
-                            payload += std::to_string(g.first) + ":" + g.second + ",";
+            }
+            else if (packet.type == epyks::PacketType::CREATE_CHANNEL) {
+                epyks::CreateChannel req;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes) && db) {
+                    if (db->IsServerOwner(username, req.server_id)) {
+                        int channelId = db->CreateChannel(req.server_id, req.channel_name, req.type);
+                        if (channelId != -1) {
+                            epyks::Packet notify;
+                            notify.type = epyks::PacketType::CREATE_CHANNEL;
+                            notify.data = "Channel created successfully";
+                            SendTo(sock, notify);
+                            if (gui) gui->AddLog("[" + username + "] created channel [" + req.channel_name + "]");
                         }
+                    } else {
                         epyks::Packet notify;
-                        notify.type = epyks::PacketType::MY_GROUPS;
-                        notify.data = payload;
+                        notify.type = epyks::PacketType::CREATE_CHANNEL;
+                        notify.data = "Permission denied. Must be owner.";
                         SendTo(sock, notify);
                     }
+                }
+            }
+            else if (packet.type == epyks::PacketType::DELETE_CHANNEL) {
+                epyks::DeleteChannel req;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes) && db) {
+                    if (db->IsServerOwner(username, req.server_id)) {
+                        db->DeleteChannel(req.channel_id);
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::DELETE_CHANNEL;
+                        notify.data = "Channel deleted successfully";
+                        SendTo(sock, notify);
+                        if (gui) gui->AddLog("[" + username + "] deleted a channel");
+                    } else {
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::DELETE_CHANNEL;
+                        notify.data = "Permission denied. Must be owner.";
+                        SendTo(sock, notify);
+                    }
+                }
+            }
+            else if (packet.type == epyks::PacketType::CHANNEL_LIST) {
+                epyks::ChannelList req;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes) && db) {
+                    auto channels = db->GetChannels(req.server_id);
+                    std::string payload;
+                    for (auto& c : channels) {
+                        payload += std::to_string(std::get<0>(c)) + ":" + std::get<1>(c) + ":" + std::to_string(std::get<2>(c)) + ",";
+                    }
+                    epyks::ChannelList resp;
+                    resp.server_id = req.server_id;
+                    resp.data = payload;
+                    auto respBytes = resp.Serialize();
+                    epyks::Packet notify;
+                    notify.type = epyks::PacketType::CHANNEL_LIST;
+                    notify.data = std::string(respBytes.begin(), respBytes.end());
+                    SendTo(sock, notify);
+                }
+            }
+            else if (packet.type == epyks::PacketType::KICK_USER) {
+                epyks::KickUser req;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes) && db) {
+                    if (db->IsServerOwner(username, req.server_id)) {
+                        db->KickUser(req.server_id, req.target_username);
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::KICK_USER;
+                        notify.data = req.target_username + " was kicked.";
+                        SendTo(sock, notify);
+                        if (gui) gui->AddLog("[" + username + "] kicked " + req.target_username);
+                    } else {
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::KICK_USER;
+                        notify.data = "Permission denied. Must be owner.";
+                        SendTo(sock, notify);
+                    }
+                }
+            }
+            else if (packet.type == epyks::PacketType::MUTE_USER) {
+                epyks::MuteUser req;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes) && db) {
+                    if (db->IsServerOwner(username, req.server_id)) {
+                        db->MuteUser(req.server_id, req.target_username, req.is_muted);
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::MUTE_USER;
+                        notify.data = req.target_username + (req.is_muted ? " was muted." : " was unmuted.");
+                        SendTo(sock, notify);
+                        if (gui) gui->AddLog("[" + username + "] muted/unmuted " + req.target_username);
+                    } else {
+                        epyks::Packet notify;
+                        notify.type = epyks::PacketType::MUTE_USER;
+                        notify.data = "Permission denied. Must be owner.";
+                        SendTo(sock, notify);
+                    }
+                }
+            }
+            else if (packet.type == epyks::PacketType::JOIN_VOICE) {
+                epyks::JoinVoice req;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes) && db) {
+                    // Just verify they are in the server
+                    auto servers = db->GetUserServers(username);
+                    bool isMember = false;
+                    for (auto& s : servers) {
+                        if (s.first == req.server_id) {
+                            isMember = true;
+                            break;
+                        }
+                    }
+                    if (isMember) {
+                        std::lock_guard<std::mutex> lock(clientsMutex);
+                        for (auto& c : clients) {
+                            if (c.socket == sock) {
+                                c.currentVoiceServerId = req.server_id;
+                                c.currentVoiceChannelId = req.channel_id;
+                                c.hasUdpAddr = false; // Need to receive a UDP packet to set this
+                                break;
+                            }
+                        }
+                        if (gui) gui->AddLog("[" + username + "] joined voice channel " + std::to_string(req.channel_id));
+                    }
+                }
+            }
+            else if (packet.type == epyks::PacketType::LEAVE_VOICE) {
+                epyks::LeaveVoice req;
+                auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+                if (req.Deserialize(bytes)) {
+                    std::lock_guard<std::mutex> lock(clientsMutex);
+                    for (auto& c : clients) {
+                        if (c.socket == sock) {
+                            c.currentVoiceServerId = -1;
+                            c.currentVoiceChannelId = -1;
+                            c.hasUdpAddr = false;
+                            break;
+                        }
+                    }
+                    if (gui) gui->AddLog("[" + username + "] left voice channel");
+                }
             }
         }
 

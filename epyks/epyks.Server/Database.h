@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <tuple>
 
 struct ChatMessage {
     std::string username;
@@ -45,15 +46,26 @@ public:
     void SavePrivateMessage(const std::string& from, const std::string& to, const std::string& message, uint64_t timestamp);
     std::vector<ChatMessage> GetPrivateMessages(const std::string& user1, const std::string& user2, int limit = 100);
 
-    //groups
-    bool CreateGroup(const std::string& name, const std::string& owner);
-    bool JoinGroup(const std::string& username, int groupId);
-    std::vector<std::string> GetGroupMembers(int groupId);
-    bool LeaveGroup(const std::string& username, int groupId);
-    int GetGroupByName(const std::string& groupName);
-    std::vector<std::pair<int, std::string>> GetAllGroups();
-    std::vector<std::pair<int, std::string>> GetUserGroups(const std::string& username);
-    bool DeleteGroup(int groupId);
+    //servers
+    bool CreateServer(const std::string& name, const std::string& owner, const std::string& password = "");
+    bool JoinServer(const std::string& username, int serverId, const std::string& password = "");
+    std::vector<std::pair<std::string, int>> GetServerMembers(int serverId);
+    bool LeaveServer(const std::string& username, int serverId);
+    int GetServerByName(const std::string& serverName);
+    std::vector<std::pair<int, std::string>> GetAllServers();
+    std::vector<std::pair<int, std::string>> GetUserServers(const std::string& username);
+    bool DeleteServer(int serverId);
+    bool IsServerOwner(const std::string& username, int serverId);
+
+    //channels
+    int CreateChannel(int serverId, const std::string& name, int type);
+    bool DeleteChannel(int channelId);
+    std::vector<std::tuple<int, std::string, int>> GetChannels(int serverId);
+
+    //server moderation
+    bool KickUser(int serverId, const std::string& target_username);
+    bool MuteUser(int serverId, const std::string& target_username, bool mute);
+    bool IsMuted(int serverId, const std::string& username);
 
 
 private:

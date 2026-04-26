@@ -252,72 +252,248 @@ namespace epyks {
         session_token.assign(bytes.begin() + 9 + errLen, bytes.end());
         return true;
     }
-    //groups
-    std::vector<uint8_t> CreateGroup::Serialize() const {
+    // Servers & Channels
+    std::vector<uint8_t> CreateServer::Serialize() const {
         std::vector<uint8_t> result;
-        uint32_t len = (uint32_t)group_name.size();
-        result.resize(4);
+        uint32_t len = (uint32_t)server_name.size();
+        uint32_t plen = (uint32_t)password.size();
+        result.resize(8);
         std::memcpy(result.data(), &len, 4);
-        result.insert(result.end(), group_name.begin(), group_name.end());
+        std::memcpy(result.data() + 4, &plen, 4);
+        result.insert(result.end(), server_name.begin(), server_name.end());
+        result.insert(result.end(), password.begin(), password.end());
         return result;
     }
 
-    bool CreateGroup::Deserialize(const std::vector<uint8_t>& bytes) {
-        if (bytes.size() < 4) return false;
-        uint32_t len = 0;
+    bool CreateServer::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 8) return false;
+        uint32_t len = 0, plen = 0;
         std::memcpy(&len, bytes.data(), 4);
-        if (bytes.size() != 4 + len) return false;
-        group_name.assign(bytes.begin() + 4, bytes.end());
+        std::memcpy(&plen, bytes.data() + 4, 4);
+        if (bytes.size() != 8 + len + plen) return false;
+        server_name.assign(bytes.begin() + 8, bytes.begin() + 8 + len);
+        password.assign(bytes.begin() + 8 + len, bytes.end());
         return true;
     }
   
-    std::vector<uint8_t> JoinGroup::Serialize() const {
+    std::vector<uint8_t> JoinServer::Serialize() const {
         std::vector<uint8_t> result;
-        result.resize(4);
-        std::memcpy(result.data(), &group_id, 4);
+        uint32_t plen = (uint32_t)password.size();
+        result.resize(8);
+        std::memcpy(result.data(), &server_id, 4);
+        std::memcpy(result.data() + 4, &plen, 4);
+        result.insert(result.end(), password.begin(), password.end());
         return result;
     }
 
-    bool JoinGroup::Deserialize(const std::vector<uint8_t>& bytes) {
-        if (bytes.size() != 4) return false;
-        std::memcpy(&group_id, bytes.data(), 4);
+    bool JoinServer::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 8) return false;
+        std::memcpy(&server_id, bytes.data(), 4);
+        uint32_t plen = 0;
+        std::memcpy(&plen, bytes.data() + 4, 4);
+        if (bytes.size() != 8 + plen) return false;
+        password.assign(bytes.begin() + 8, bytes.end());
         return true;
 	}
 
-    std::vector<uint8_t> LeaveGroup::Serialize() const {
+    std::vector<uint8_t> LeaveServer::Serialize() const {
         std::vector<uint8_t> result;
         result.resize(4);
-        std::memcpy(result.data(), &group_id, 4);
+        std::memcpy(result.data(), &server_id, 4);
         return result;
 	}
 
-    bool LeaveGroup::Deserialize(const std::vector<uint8_t>& bytes) {
+    bool LeaveServer::Deserialize(const std::vector<uint8_t>& bytes) {
         if (bytes.size() != 4) return false;
-        std::memcpy(&group_id, bytes.data(), 4);
+        std::memcpy(&server_id, bytes.data(), 4);
 		return true;
 	}
 
-    std::vector<uint8_t> GroupMessage::Serialize() const {
+    std::vector<uint8_t> ServerMessage::Serialize() const {
         std::vector<uint8_t> result;
-        uint32_t id = (uint32_t)group_id;
+        uint32_t sid = (uint32_t)server_id;
+        uint32_t cid = (uint32_t)channel_id;
         uint32_t contentLen = (uint32_t)content.size();
-        result.resize(8);
-        std::memcpy(result.data(), &id, 4);
-        std::memcpy(result.data() + 4, &contentLen, 4);
+        result.resize(12);
+        std::memcpy(result.data(), &sid, 4);
+        std::memcpy(result.data() + 4, &cid, 4);
+        std::memcpy(result.data() + 8, &contentLen, 4);
         result.insert(result.end(), content.begin(), content.end());
         return result;
     }
 
-    bool GroupMessage::Deserialize(const std::vector<uint8_t>& bytes) {
-        if (bytes.size() < 8) return false;
-        uint32_t id = 0, contentLen = 0;
-        std::memcpy(&id, bytes.data(), 4);
-        std::memcpy(&contentLen, bytes.data() + 4, 4);
-        if (bytes.size() != 8 + contentLen) return false;
-        group_id = id;
-        content.assign(bytes.begin() + 8, bytes.end());
+    bool ServerMessage::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 12) return false;
+        uint32_t sid = 0, cid = 0, contentLen = 0;
+        std::memcpy(&sid, bytes.data(), 4);
+        std::memcpy(&cid, bytes.data() + 4, 4);
+        std::memcpy(&contentLen, bytes.data() + 8, 4);
+        if (bytes.size() != 12 + contentLen) return false;
+        server_id = sid;
+        channel_id = cid;
+        content.assign(bytes.begin() + 12, bytes.end());
         return true;
 	}
+
+    std::vector<uint8_t> CreateChannel::Serialize() const {
+        std::vector<uint8_t> result;
+        uint32_t sid = (uint32_t)server_id;
+        uint32_t ctype = (uint32_t)type;
+        uint32_t len = (uint32_t)channel_name.size();
+        result.resize(12);
+        std::memcpy(result.data(), &sid, 4);
+        std::memcpy(result.data() + 4, &ctype, 4);
+        std::memcpy(result.data() + 8, &len, 4);
+        result.insert(result.end(), channel_name.begin(), channel_name.end());
+        return result;
+    }
+
+    bool CreateChannel::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 12) return false;
+        uint32_t sid = 0, ctype = 0, len = 0;
+        std::memcpy(&sid, bytes.data(), 4);
+        std::memcpy(&ctype, bytes.data() + 4, 4);
+        std::memcpy(&len, bytes.data() + 8, 4);
+        if (bytes.size() != 12 + len) return false;
+        server_id = sid;
+        type = ctype;
+        channel_name.assign(bytes.begin() + 12, bytes.end());
+        return true;
+    }
+
+    std::vector<uint8_t> DeleteChannel::Serialize() const {
+        std::vector<uint8_t> result;
+        result.resize(8);
+        std::memcpy(result.data(), &server_id, 4);
+        std::memcpy(result.data() + 4, &channel_id, 4);
+        return result;
+    }
+
+    bool DeleteChannel::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() != 8) return false;
+        std::memcpy(&server_id, bytes.data(), 4);
+        std::memcpy(&channel_id, bytes.data() + 4, 4);
+        return true;
+    }
+
+    std::vector<uint8_t> KickUser::Serialize() const {
+        std::vector<uint8_t> result;
+        uint32_t len = (uint32_t)target_username.size();
+        result.resize(8);
+        std::memcpy(result.data(), &server_id, 4);
+        std::memcpy(result.data() + 4, &len, 4);
+        result.insert(result.end(), target_username.begin(), target_username.end());
+        return result;
+    }
+
+    bool KickUser::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 8) return false;
+        std::memcpy(&server_id, bytes.data(), 4);
+        uint32_t len = 0;
+        std::memcpy(&len, bytes.data() + 4, 4);
+        if (bytes.size() != 8 + len) return false;
+        target_username.assign(bytes.begin() + 8, bytes.end());
+        return true;
+    }
+
+    std::vector<uint8_t> MuteUser::Serialize() const {
+        std::vector<uint8_t> result;
+        uint32_t len = (uint32_t)target_username.size();
+        result.resize(9);
+        std::memcpy(result.data(), &server_id, 4);
+        std::memcpy(result.data() + 4, &len, 4);
+        result[8] = is_muted ? 1 : 0;
+        result.insert(result.end(), target_username.begin(), target_username.end());
+        return result;
+    }
+
+    bool MuteUser::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 9) return false;
+        std::memcpy(&server_id, bytes.data(), 4);
+        uint32_t len = 0;
+        std::memcpy(&len, bytes.data() + 4, 4);
+        if (bytes.size() != 9 + len) return false;
+        is_muted = bytes[8] != 0;
+        target_username.assign(bytes.begin() + 9, bytes.end());
+        return true;
+    }
+
+    std::vector<uint8_t> ChannelList::Serialize() const {
+        std::vector<uint8_t> result;
+        uint32_t len = (uint32_t)data.size();
+        result.resize(8);
+        std::memcpy(result.data(), &server_id, 4);
+        std::memcpy(result.data() + 4, &len, 4);
+        result.insert(result.end(), data.begin(), data.end());
+        return result;
+    }
+
+    bool ChannelList::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 8) return false;
+        std::memcpy(&server_id, bytes.data(), 4);
+        uint32_t len = 0;
+        std::memcpy(&len, bytes.data() + 4, 4);
+        if (bytes.size() != 8 + len) return false;
+        data.assign(bytes.begin() + 8, bytes.end());
+        return true;
+    }
+
+    std::vector<uint8_t> JoinVoice::Serialize() const {
+        std::vector<uint8_t> result;
+        result.resize(8);
+        std::memcpy(result.data(), &server_id, 4);
+        std::memcpy(result.data() + 4, &channel_id, 4);
+        return result;
+    }
+
+    bool JoinVoice::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() != 8) return false;
+        std::memcpy(&server_id, bytes.data(), 4);
+        std::memcpy(&channel_id, bytes.data() + 4, 4);
+        return true;
+    }
+
+    std::vector<uint8_t> LeaveVoice::Serialize() const {
+        std::vector<uint8_t> result;
+        result.resize(8);
+        std::memcpy(result.data(), &server_id, 4);
+        std::memcpy(result.data() + 4, &channel_id, 4);
+        return result;
+    }
+
+    bool LeaveVoice::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() != 8) return false;
+        std::memcpy(&server_id, bytes.data(), 4);
+        std::memcpy(&channel_id, bytes.data() + 4, 4);
+        return true;
+    }
+
+    std::vector<uint8_t> VoiceData::Serialize() const {
+        std::vector<uint8_t> result;
+        uint32_t nameLen = (uint32_t)username.size();
+        uint32_t dataLen = (uint32_t)audio_data.size();
+        result.resize(16);
+        std::memcpy(result.data(), &nameLen, 4);
+        std::memcpy(result.data() + 4, &server_id, 4);
+        std::memcpy(result.data() + 8, &channel_id, 4);
+        std::memcpy(result.data() + 12, &dataLen, 4);
+        result.insert(result.end(), username.begin(), username.end());
+        result.insert(result.end(), audio_data.begin(), audio_data.end());
+        return result;
+    }
+
+    bool VoiceData::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 16) return false;
+        uint32_t nameLen = 0, dataLen = 0;
+        std::memcpy(&nameLen, bytes.data(), 4);
+        std::memcpy(&server_id, bytes.data() + 4, 4);
+        std::memcpy(&channel_id, bytes.data() + 8, 4);
+        std::memcpy(&dataLen, bytes.data() + 12, 4);
+        if (bytes.size() != 16 + nameLen + dataLen) return false;
+        username.assign(bytes.begin() + 16, bytes.begin() + 16 + nameLen);
+        audio_data.assign(bytes.begin() + 16 + nameLen, bytes.end());
+        return true;
+    }
 
 
     std::vector<uint8_t> TokenLoginRequest::Serialize() const {

@@ -124,7 +124,7 @@ void ServerGUI::DrawMainWindow() {
                 scrollToBottom = true;
             }
 
-            if (ImGui::MenuItem("Manage Groups...")) showGroupManager = true;
+            if (ImGui::MenuItem("Manage Servers...")) showGroupManager = true;
             ImGui::Separator();
             if (ImGui::MenuItem("Exit", "Alt+F4")) PostQuitMessage(0);
             ImGui::EndMenu();
@@ -142,24 +142,24 @@ void ServerGUI::DrawMainWindow() {
             ImGui::EndMenu();
         }
 
-        if (showGroupManager) ImGui::OpenPopup("Manage Groups");
+        if (showGroupManager) ImGui::OpenPopup("Manage Servers");
         ImVec2 center = ImGui::GetMainViewport()->GetCenter();
         ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(ImVec2(400, 300), ImGuiCond_Always);
-        if (ImGui::BeginPopupModal("Manage Groups", &showGroupManager, ImGuiWindowFlags_NoResize)) {
-            ImGui::Text("All Groups:");
+        if (ImGui::BeginPopupModal("Manage Servers", &showGroupManager, ImGuiWindowFlags_NoResize)) {
+            ImGui::Text("All Servers:");
             ImGui::Separator();
             if (database) {
-                auto groups = database->GetAllGroups();
-                if (groups.empty()) {
-                    ImGui::Text("No groups exist.");
+                auto servers_list = database->GetAllServers();
+                if (servers_list.empty()) {
+                    ImGui::Text("No servers exist.");
                 }
-                for (auto& g : groups) {
-                    ImGui::Text("[%d] %s", g.first, g.second.c_str());
+                for (auto& s : servers_list) {
+                    ImGui::Text("[%d] %s", s.first, s.second.c_str());
                     ImGui::SameLine();
-                    if (ImGui::Button(("Delete##" + std::to_string(g.first)).c_str())) {
-                        database->DeleteGroup(g.first);
-                        AddLog("[System] Deleted group: " + g.second);
+                    if (ImGui::Button(("Delete##" + std::to_string(s.first)).c_str())) {
+                        database->DeleteServer(s.first);
+                        AddLog("[System] Deleted server: " + s.second);
                     }
                 }
             }

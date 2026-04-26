@@ -79,31 +79,93 @@ namespace epyks {
         bool Deserialize(const std::vector<uint8_t>& bytes);
     };
 
-	struct CreateGroup {
-		std::string group_name;
+	struct CreateServer {
+		std::string server_name;
+		std::string password;
         std::vector<uint8_t> Serialize() const;
 		bool Deserialize(const std::vector<uint8_t>& bytes);
 	};
 
-    struct LeaveGroup{
-        int group_id;
+    struct LeaveServer {
+        int server_id;
         std::vector<uint8_t> Serialize() const;
         bool Deserialize(const std::vector<uint8_t>& bytes);
 	};
 
-    struct JoinGroup{
-        int group_id;
+    struct JoinServer {
+        int server_id;
+        std::string password;
         std::vector<uint8_t> Serialize() const;
 		bool Deserialize(const std::vector<uint8_t>& bytes);
 	};
 
-    struct GroupMessage {
-        int group_id;
+    struct ServerMessage {
+        int server_id;
+        int channel_id;
         std::string content;
         std::vector<uint8_t> Serialize() const;
         bool Deserialize(const std::vector<uint8_t>& bytes);
 	};
 
+    struct CreateChannel {
+        int server_id;
+        std::string channel_name;
+        int type;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
+    struct DeleteChannel {
+        int server_id;
+        int channel_id;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
+    struct KickUser {
+        int server_id;
+        std::string target_username;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
+    struct MuteUser {
+        int server_id;
+        std::string target_username;
+        bool is_muted;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
+    struct ChannelList {
+        int server_id;
+        std::string data;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
+    struct JoinVoice {
+        int server_id;
+        int channel_id;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
+    struct LeaveVoice {
+        int server_id;
+        int channel_id;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
+    struct VoiceData {
+        std::string username;
+        int server_id;
+        int channel_id;
+        std::vector<uint8_t> audio_data;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
 
 
     // Packet type constants
@@ -130,13 +192,27 @@ namespace epyks {
         constexpr uint32_t LOGIN = 32;
         constexpr uint32_t LOGIN_RESPONSE = 33;
 
-        //groups
-		constexpr uint32_t CREATE_GROUP = 40;
-		constexpr uint32_t JOIN_GROUP = 41;
-		constexpr uint32_t LEAVE_GROUP = 42;
-        constexpr uint32_t GROUP_MESSAGE = 43;
-        constexpr uint32_t LIST_GROUPS = 44;
-        constexpr uint32_t MY_GROUPS = 45;
+        // Servers
+		constexpr uint32_t CREATE_SERVER = 40;
+		constexpr uint32_t JOIN_SERVER = 41;
+		constexpr uint32_t LEAVE_SERVER = 42;
+        constexpr uint32_t SERVER_MESSAGE = 43;
+        constexpr uint32_t LIST_SERVERS = 44;
+        constexpr uint32_t MY_SERVERS = 45;
+
+        // Channels
+        constexpr uint32_t CREATE_CHANNEL = 50;
+        constexpr uint32_t DELETE_CHANNEL = 51;
+        constexpr uint32_t CHANNEL_LIST = 52;
+        
+        // Mod
+        constexpr uint32_t KICK_USER = 60;
+        constexpr uint32_t MUTE_USER = 61;
+        
+        // Voice
+        constexpr uint32_t JOIN_VOICE = 70;
+        constexpr uint32_t LEAVE_VOICE = 71;
+        constexpr uint32_t VOICE_DATA = 72;
     }
 
     struct RegisterRequest {
