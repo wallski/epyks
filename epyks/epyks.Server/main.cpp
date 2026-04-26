@@ -4,12 +4,14 @@
 
 #include <winsock2.h>
 #include <windows.h>
-#include <ws2tcpip.h>
-#include <vector>
+#include <sqlite3.h>
+#include <mutex>
+#include <string>
 #include <thread>
 #include <atomic>
-#include <mutex>
+#include <vector>
 #include <algorithm>
+#include <ws2tcpip.h>
 #include "Protocol/Packet.h"
 #include "ServerGUI.h"
 #include "Database.h"
@@ -28,6 +30,7 @@ struct Client {
     int currentVoiceChannelId = -1;
     sockaddr_in udpAddr = {};
     bool hasUdpAddr = false;
+    uint64_t lastVoicePacket = 0;
 };
 
 class ChatServer {
@@ -178,6 +181,7 @@ public:
                             c.currentVoiceServerId == pkt.server_id && c.currentVoiceChannelId == pkt.channel_id) {
                             c.udpAddr = senderAddr;
                             c.hasUdpAddr = true;
+                            c.lastVoicePacket = GetTickCount64();
                             senderVerified = true;
                             break;
                         }
@@ -333,7 +337,51 @@ public:
             epyks::Packet packet;
             if (!ReceivePacket(sock, packet)) break;
 
-            if (packet.type == epyks::PacketType::CHAT_MESSAGE) {
+            if (packet.type == epyks::PacketType::HISTORY) {
+                try {
+                    if (gui) gui->AddLog("[Debug] History request data: " + packet.data);
+                    // Check if it's a server history request "serverId|channelId"
+                    size_t sep = packet.data.find('|');
+                    if (sep != std::string::npos && db) {
+                        std::string sidStr = packet.data.substr(0, sep);
+                        std::string cidStr = packet.data.substr(sep + 1);
+                        if (sidStr.empty() || cidStr.empty()) {
+                            if (gui) gui->AddLog("[Error] Malformed history request: " + packet.data);
+                        } else {
+                            int serverId = std::stoi(sidStr);
+                            int channelId = std::stoi(cidStr);
+                            auto history = db->GetServerMessages(serverId, channelId, 100);
+                            for (auto& msg : history) {
+                                epyks::ServerMessage sm;
+                                sm.server_id = serverId;
+                                sm.channel_id = channelId;
+                                sm.username = msg.username;
+                                sm.content = msg.message; 
+                                
+                                epyks::Packet hist;
+                                hist.type = epyks::PacketType::SERVER_MESSAGE;
+                                auto sdata = sm.Serialize();
+                                hist.data = std::string(sdata.begin(), sdata.end());
+                                SendTo(sock, hist);
+                            }
+                        }
+                    } else if (db) {
+                        // Global history request?
+                        if (gui) gui->AddLog("[Info] Sending global history for " + username);
+                        auto messages = db->GetRecentMessages(100);
+                        for (auto& msg : messages) {
+                            epyks::Packet hist;
+                            hist.type = epyks::PacketType::HISTORY;
+                            hist.data = "[" + msg.username + "]: " + msg.message;
+                            hist.timestamp = msg.timestamp;
+                            SendTo(sock, hist);
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    if (gui) gui->AddLog("[Error] History request error: " + std::string(e.what()));
+                }
+            }
+            else if (packet.type == epyks::PacketType::CHAT_MESSAGE) {
                 if (gui) gui->AddLog("[" + username + "]: " + packet.data);
                 if (db) db->SaveMessage(username, packet.data, packet.timestamp);
 
@@ -361,12 +409,15 @@ public:
                             }
                         }
                     }
-                    if (targetOnline && db) {
+                    
+                    if (db) {
                         db->CreateFriendRequest(username, req.target_username);
-                        epyks::Packet notify;
-                        notify.type = epyks::PacketType::FRIEND_REQUEST;
-                        notify.data = username + " wants to add you as friend";
-                        SendTo(targetSock, notify);
+                        if (targetOnline) {
+                            epyks::Packet notify;
+                            notify.type = epyks::PacketType::FRIEND_REQUEST;
+                            notify.data = username + " wants to add you as friend";
+                            SendTo(targetSock, notify);
+                        }
                         if (gui) gui->AddLog("[" + username + "] sent friend request to [" + req.target_username + "]");
                     }
                 }
@@ -584,11 +635,19 @@ public:
                     
                     auto members = db->GetServerMembers(req.server_id);
 
+                    time_t now = time(nullptr);
+                    struct tm tm_info;
+                    localtime_s(&tm_info, &now);
+                    char timeStr[16];
+                    strftime(timeStr, sizeof(timeStr), "%H:%M", &tm_info);
+
                     epyks::ServerMessage forward;
                     forward.server_id = req.server_id;
                     forward.channel_id = req.channel_id;
-                    forward.content = username + ": " + req.content;
+                    forward.content = "[" + std::string(timeStr) + "] [" + username + "] " + req.content;
                     auto forwardBytes = forward.Serialize();
+
+                    if (db) db->SaveServerMessage(req.server_id, req.channel_id, username, forward.content, packet.timestamp);
 
                     std::lock_guard<std::mutex> lock(clientsMutex);
                     for (const auto& member : members) {
@@ -609,7 +668,7 @@ public:
                     auto list = db->GetAllServers();
                     std::string result;
                     for (auto& c : list) {
-                        result += std::to_string(c.first) + ":" + c.second + ",";
+                        result += std::to_string(std::get<0>(c)) + ":" + std::get<1>(c) + ":" + (std::get<2>(c) ? "1" : "0") + ",";
                     }
                     epyks::Packet notify;
                     notify.type = epyks::PacketType::LIST_SERVERS;
@@ -643,7 +702,7 @@ public:
                     epyks::Packet notify;
                     notify.type = epyks::PacketType::PROFILE_DATA;
                     notify.data = std::string(pBytes.begin(), pBytes.end());
-                    SendTo(sock, notify);
+                    Broadcast(notify, -1);
                 }
             }
             else if (packet.type == epyks::PacketType::GET_PROFILE) {
@@ -669,6 +728,8 @@ public:
                     auto members = db->GetServerMembersDetailed(req.server_id);
                     epyks::MemberListResponse res;
                     res.server_id = req.server_id;
+                    
+                    std::lock_guard<std::mutex> lock(clientsMutex);
                     for (auto& m : members) {
                         epyks::MemberInfo mi;
                         mi.username = m.username;
@@ -676,6 +737,20 @@ public:
                         mi.pfp_url = m.pfp_url;
                         mi.role = m.role;
                         mi.is_muted = m.is_muted;
+                        mi.voice_channel_id = -1;
+                        mi.is_talking = false;
+
+                        // Check if user is currently online and in a voice channel
+                        for (auto& c : clients) {
+                            if (c.username == m.username) {
+                                if (c.currentVoiceServerId == req.server_id) {
+                                    mi.voice_channel_id = c.currentVoiceChannelId;
+                                    // Talking detection (packet in last 500ms)
+                                    mi.is_talking = (GetTickCount64() - c.lastVoicePacket) < 500;
+                                }
+                                break;
+                            }
+                        }
                         res.members.push_back(mi);
                     }
                     auto resBytes = res.Serialize();
@@ -685,24 +760,57 @@ public:
                     SendTo(sock, notify);
                 }
             }
+            else if (packet.type == epyks::PacketType::RENAME_SERVER) {
+                try {
+                    size_t sep = packet.data.find('|');
+                    if (sep != std::string::npos && db) {
+                        int serverId = std::stoi(packet.data.substr(0, sep));
+                        std::string newName = packet.data.substr(sep + 1);
+                        if (gui) gui->AddLog("[DEBUG] User [" + username + "] requesting rename for server [" + std::to_string(serverId) + "] to [" + newName + "]");
+                        if (db->IsServerOwner(username, serverId)) {
+                            if (db->UpdateServerName(serverId, newName)) {
+                                epyks::Packet notify;
+                                notify.type = epyks::PacketType::RENAME_SERVER;
+                                notify.data = "Server renamed successfully";
+                                SendTo(sock, notify);
+                                if (gui) gui->AddLog("[SUCCESS] Server [" + std::to_string(serverId) + "] renamed to [" + newName + "]");
+                            } else {
+                                if (gui) gui->AddLog("[ERROR] Database failed to update server name for [" + std::to_string(serverId) + "]");
+                            }
+                        } else {
+                            epyks::Packet notify;
+                            notify.type = epyks::PacketType::RENAME_SERVER;
+                            notify.data = "Permission denied. Must be owner.";
+                            SendTo(sock, notify);
+                            if (gui) gui->AddLog("[DENIED] User [" + username + "] is NOT owner of server [" + std::to_string(serverId) + "]");
+                        }
+                    }
+                } catch (...) {
+                    if (gui) gui->AddLog("[Error] Failed to process server rename");
+                }
+            }
             else if (packet.type == epyks::PacketType::CREATE_CHANNEL) {
                 epyks::CreateChannel req;
                 auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
                 if (req.Deserialize(bytes) && db) {
+                    if (gui) gui->AddLog("[DEBUG] User [" + username + "] creating channel [" + req.channel_name + "] in server [" + std::to_string(req.server_id) + "]");
                     if (db->IsServerOwner(username, req.server_id)) {
-                        int channelId = db->CreateChannel(req.server_id, req.channel_name, req.type);
+                        int channelId = db->CreateChannel(req.server_id, req.channel_name, req.type, req.category);
                         if (channelId != -1) {
                             epyks::Packet notify;
                             notify.type = epyks::PacketType::CREATE_CHANNEL;
                             notify.data = "Channel created successfully";
                             SendTo(sock, notify);
-                            if (gui) gui->AddLog("[" + username + "] created channel [" + req.channel_name + "]");
+                            if (gui) gui->AddLog("[SUCCESS] Channel [" + req.channel_name + "] created in server [" + std::to_string(req.server_id) + "]");
+                        } else {
+                            if (gui) gui->AddLog("[ERROR] Database failed to create channel [" + req.channel_name + "]");
                         }
                     } else {
                         epyks::Packet notify;
                         notify.type = epyks::PacketType::CREATE_CHANNEL;
                         notify.data = "Permission denied. Must be owner.";
                         SendTo(sock, notify);
+                        if (gui) gui->AddLog("[DENIED] User [" + username + "] is NOT owner of server [" + std::to_string(req.server_id) + "]");
                     }
                 }
             }
@@ -730,13 +838,13 @@ public:
                 auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
                 if (req.Deserialize(bytes) && db) {
                     auto channels = db->GetChannels(req.server_id);
-                    std::string payload;
+                    std::string result;
                     for (auto& c : channels) {
-                        payload += std::to_string(std::get<0>(c)) + ":" + std::get<1>(c) + ":" + std::to_string(std::get<2>(c)) + ",";
+                        result += std::to_string(std::get<0>(c)) + ":" + std::get<1>(c) + ":" + std::to_string(std::get<2>(c)) + ":" + std::get<3>(c) + ",";
                     }
                     epyks::ChannelList resp;
                     resp.server_id = req.server_id;
-                    resp.data = payload;
+                    resp.data = result;
                     auto respBytes = resp.Serialize();
                     epyks::Packet notify;
                     notify.type = epyks::PacketType::CHANNEL_LIST;

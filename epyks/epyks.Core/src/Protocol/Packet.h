@@ -102,6 +102,7 @@ namespace epyks {
     struct ServerMessage {
         int server_id;
         int channel_id;
+        std::string username;
         std::string content;
         std::vector<uint8_t> Serialize() const;
         bool Deserialize(const std::vector<uint8_t>& bytes);
@@ -111,6 +112,7 @@ namespace epyks {
         int server_id;
         std::string channel_name;
         int type;
+        std::string category;
         std::vector<uint8_t> Serialize() const;
         bool Deserialize(const std::vector<uint8_t>& bytes);
     };
@@ -194,6 +196,8 @@ namespace epyks {
         std::string pfp_url;
         int role;
         bool is_muted;
+        int voice_channel_id = -1; // -1 if not in voice
+        bool is_talking = false;
     };
 
     struct MemberListResponse {
@@ -235,6 +239,7 @@ namespace epyks {
         constexpr uint32_t SERVER_MESSAGE = 43;
         constexpr uint32_t LIST_SERVERS = 44;
         constexpr uint32_t MY_SERVERS = 45;
+        constexpr uint32_t RENAME_SERVER = 46;
 
         // Channels
         constexpr uint32_t CREATE_CHANNEL = 50;

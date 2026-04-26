@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdint>
 #include <tuple>
+#include <mutex>
 
 struct ChatMessage {
     std::string username;
@@ -56,22 +57,25 @@ public:
     void SavePrivateMessage(const std::string& from, const std::string& to, const std::string& message, uint64_t timestamp);
     std::vector<ChatMessage> GetPrivateMessages(const std::string& user1, const std::string& user2, int limit = 100);
 
-    //servers
+    // servers
     bool CreateServer(const std::string& name, const std::string& owner, const std::string& password = "");
     bool JoinServer(const std::string& username, int serverId, const std::string& password = "");
+    bool UpdateServerName(int serverId, const std::string& newName);
+    void SaveServerMessage(int serverId, int channelId, const std::string& username, const std::string& message, uint64_t timestamp);
+    std::vector<ChatMessage> GetServerMessages(int serverId, int channelId, int limit = 100);
     std::vector<std::pair<std::string, int>> GetServerMembers(int serverId);
     std::vector<UserProfileInfo> GetServerMembersDetailed(int serverId);
     bool LeaveServer(const std::string& username, int serverId);
     int GetServerByName(const std::string& serverName);
-    std::vector<std::pair<int, std::string>> GetAllServers();
+    std::vector<std::tuple<int, std::string, bool>> GetAllServers();
     std::vector<std::pair<int, std::string>> GetUserServers(const std::string& username);
     bool DeleteServer(int serverId);
     bool IsServerOwner(const std::string& username, int serverId);
 
     //channels
-    int CreateChannel(int serverId, const std::string& name, int type);
+    int CreateChannel(int serverId, const std::string& name, int type, const std::string& category = "Uncategorized");
     bool DeleteChannel(int channelId);
-    std::vector<std::tuple<int, std::string, int>> GetChannels(int serverId);
+    std::vector<std::tuple<int, std::string, int, std::string>> GetChannels(int serverId);
 
     //server moderation
     bool KickUser(int serverId, const std::string& target_username);
@@ -81,4 +85,5 @@ public:
 
 private:
     bool Execute(const std::string& sql);
+    std::mutex dbMutex;
 };

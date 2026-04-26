@@ -41,8 +41,13 @@ public:
     std::vector<AudioDeviceInfo> GetInputDevices();
     std::vector<AudioDeviceInfo> GetOutputDevices();
     bool SetDevices(const std::string& inputId, const std::string& outputId);
+    std::string GetCurrentInputDevice() const { return m_currentInputName; }
+    std::string GetCurrentOutputDevice() const { return m_currentOutputName; }
 
     bool IsVoiceActive() const { return m_isVoiceActive; }
+    bool IsSpeaking() const { return m_isSpeaking; }
+    void SetMute(bool muted) { m_isMuted = muted; }
+    void SetDeafened(bool deafened) { m_isDeafened = deafened; }
 
 private:
     // miniaudio callback
@@ -59,6 +64,11 @@ private:
 
     std::atomic<bool> m_isInitialized;
     std::atomic<bool> m_isVoiceActive;
+    std::atomic<bool> m_isSpeaking{false};
+    std::string m_currentInputName;
+    std::string m_currentOutputName;
+    std::atomic<bool> m_isMuted{false};
+    std::atomic<bool> m_isDeafened{false};
 
     // Buffer for outgoing encoded packets
     std::mutex m_outMutex;

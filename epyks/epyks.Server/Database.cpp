@@ -11,6 +11,7 @@ bool Database::Open(const std::string& path) {
     }
 
     Execute("PRAGMA journal_mode=WAL;");
+    Execute("PRAGMA synchronous=NORMAL;");
 
     // Drop old tables
     Execute("DROP TABLE IF EXISTS chat_groups;");
@@ -55,6 +56,16 @@ bool Database::Open(const std::string& path) {
     );
 
     Execute(
+        "CREATE TABLE IF NOT EXISTS server_messages ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "server_id INTEGER,"
+        "channel_id INTEGER,"
+        "username TEXT,"
+        "message TEXT,"
+        "timestamp INTEGER);"
+    );
+
+    Execute(
         "CREATE TABLE IF NOT EXISTS servers ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "name TEXT,"
@@ -67,7 +78,8 @@ bool Database::Open(const std::string& path) {
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "server_id INTEGER,"
         "name TEXT,"
-        "type INTEGER);"
+        "type INTEGER,"
+        "category TEXT DEFAULT 'Uncategorized');"
     );
 
     Execute(
@@ -106,6 +118,7 @@ void Database::ClearChatHistory() {
 }
 
 void Database::SaveMessage(const std::string& username, const std::string& message, uint64_t timestamp) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     sqlite3_stmt* stmt;
     sqlite3_prepare_v2(db,
         "INSERT INTO chat_messages (username, message, timestamp) VALUES(?,?,?)",
@@ -120,6 +133,7 @@ void Database::SaveMessage(const std::string& username, const std::string& messa
 }
 
 std::vector<ChatMessage> Database::GetRecentMessages(int limit) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     std::vector<ChatMessage> result;
 
     sqlite3_stmt* stmt;
@@ -131,9 +145,57 @@ std::vector<ChatMessage> Database::GetRecentMessages(int limit) {
     sqlite3_bind_int(stmt, 1, limit);
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* user = (const char*)sqlite3_column_text(stmt, 0);
+        const char* msg = (const char*)sqlite3_column_text(stmt, 1);
         result.push_back({
-            (const char*)sqlite3_column_text(stmt, 0),
-            (const char*)sqlite3_column_text(stmt, 1),
+            user ? user : "",
+            msg ? msg : "",
+            (uint64_t)sqlite3_column_int64(stmt, 2)
+            });
+    }
+
+    sqlite3_finalize(stmt);
+    std::reverse(result.begin(), result.end());
+    return result;
+}
+
+void Database::SaveServerMessage(int serverId, int channelId, const std::string& username, const std::string& message, uint64_t timestamp) {
+    std::lock_guard<std::mutex> lock(dbMutex);
+    sqlite3_stmt* stmt;
+    sqlite3_prepare_v2(db,
+        "INSERT INTO server_messages(server_id, channel_id, username, message, timestamp) VALUES(?, ?, ?, ?, ?)",
+        -1, &stmt, nullptr);
+
+    sqlite3_bind_int(stmt, 1, serverId);
+    sqlite3_bind_int(stmt, 2, channelId);
+    sqlite3_bind_text(stmt, 3, username.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, message.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 5, timestamp);
+
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
+std::vector<ChatMessage> Database::GetServerMessages(int serverId, int channelId, int limit) {
+    std::lock_guard<std::mutex> lock(dbMutex);
+    std::vector<ChatMessage> result;
+    sqlite3_stmt* stmt;
+    sqlite3_prepare_v2(db,
+        "SELECT username, message, timestamp FROM server_messages "
+        "WHERE server_id=? AND channel_id=? "
+        "ORDER BY id DESC LIMIT ?",
+        -1, &stmt, nullptr);
+
+    sqlite3_bind_int(stmt, 1, serverId);
+    sqlite3_bind_int(stmt, 2, channelId);
+    sqlite3_bind_int(stmt, 3, limit);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* user = (const char*)sqlite3_column_text(stmt, 0);
+        const char* msg = (const char*)sqlite3_column_text(stmt, 1);
+        result.push_back({
+            user ? user : "",
+            msg ? msg : "",
             (uint64_t)sqlite3_column_int64(stmt, 2)
             });
     }
@@ -432,14 +494,16 @@ int Database::GetServerByName(const std::string& serverName) {
     return serverId;
 }
 
-std::vector<std::pair<int, std::string>> Database::GetAllServers() {
+std::vector<std::tuple<int, std::string, bool>> Database::GetAllServers() {
     sqlite3_stmt* stmt;
     sqlite3_prepare_v2(db,
-        "SELECT id, name FROM servers",
+        "SELECT id, name, password_hash FROM servers",
         -1, &stmt, nullptr);
-    std::vector<std::pair<int, std::string>> results;
+    std::vector<std::tuple<int, std::string, bool>> results;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-        results.emplace_back(sqlite3_column_int(stmt, 0), (const char*)sqlite3_column_text(stmt, 1));
+        const char* pass = (const char*)sqlite3_column_text(stmt, 2);
+        bool hasPass = (pass != nullptr && strlen(pass) > 0);
+        results.emplace_back(sqlite3_column_int(stmt, 0), (const char*)sqlite3_column_text(stmt, 1), hasPass);
     }
     sqlite3_finalize(stmt);
     return results;
@@ -468,6 +532,16 @@ bool Database::DeleteServer(int serverId) {
     return true;
 }
 
+bool Database::UpdateServerName(int serverId, const std::string& newName) {
+    sqlite3_stmt* stmt;
+    sqlite3_prepare_v2(db, "UPDATE servers SET name=? WHERE id=?", -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, newName.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, serverId);
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
 bool Database::IsServerOwner(const std::string& username, int serverId) {
     sqlite3_stmt* stmt;
     sqlite3_prepare_v2(db,
@@ -484,18 +558,22 @@ bool Database::IsServerOwner(const std::string& username, int serverId) {
 }
 
 //channels
-int Database::CreateChannel(int serverId, const std::string& name, int type) {
-    sqlite3_stmt* stmt;
+int Database::CreateChannel(int serverId, const std::string& name, int type, const std::string& category) {
+	sqlite3_stmt* stmt;
     sqlite3_prepare_v2(db,
-         "INSERT INTO channels(server_id, name, type) VALUES(?, ?, ?)",
-         -1, &stmt, nullptr);
+         "INSERT INTO channels(server_id, name, type, category) VALUES(?, ?, ?, ?)",
+		-1, &stmt, nullptr);
     sqlite3_bind_int(stmt, 1, serverId);
     sqlite3_bind_text(stmt, 2, name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 3, type);
-    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
-    sqlite3_finalize(stmt);
-    if(ok) return (int)sqlite3_last_insert_rowid(db);
-    return -1;
+    sqlite3_bind_text(stmt, 4, category.c_str(), -1, SQLITE_TRANSIENT);
+    
+    int id = -1;
+    if (sqlite3_step(stmt) == SQLITE_DONE) {
+        id = (int)sqlite3_last_insert_rowid(db);
+    }
+	sqlite3_finalize(stmt);
+	return id;
 }
 
 bool Database::DeleteChannel(int channelId) {
@@ -509,15 +587,20 @@ bool Database::DeleteChannel(int channelId) {
     return ok;
 }
 
-std::vector<std::tuple<int, std::string, int>> Database::GetChannels(int serverId) {
+std::vector<std::tuple<int, std::string, int, std::string>> Database::GetChannels(int serverId) {
     sqlite3_stmt* stmt;
     sqlite3_prepare_v2(db,
-        "SELECT id, name, type FROM channels WHERE server_id=?",
+        "SELECT id, name, type, category FROM channels WHERE server_id=?",
         -1, &stmt, nullptr);
     sqlite3_bind_int(stmt, 1, serverId);
-    std::vector<std::tuple<int, std::string, int>> results;
+    std::vector<std::tuple<int, std::string, int, std::string>> results;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-        results.emplace_back(sqlite3_column_int(stmt, 0), (const char*)sqlite3_column_text(stmt, 1), sqlite3_column_int(stmt, 2));
+        results.emplace_back(
+            sqlite3_column_int(stmt, 0), 
+            (const char*)sqlite3_column_text(stmt, 1), 
+            sqlite3_column_int(stmt, 2),
+            sqlite3_column_text(stmt, 3) ? (const char*)sqlite3_column_text(stmt, 3) : "Uncategorized"
+        );
     }
     sqlite3_finalize(stmt);
     return results;
@@ -560,6 +643,7 @@ bool Database::IsMuted(int serverId, const std::string& username) {
 
 void Database::SavePrivateMessage(const std::string& from, const std::string& to,
     const std::string& msg, uint64_t ts) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     sqlite3_stmt* stmt;
     sqlite3_prepare_v2(db,
         "INSERT INTO private_messages VALUES(?,?,?,?)",
@@ -575,6 +659,7 @@ void Database::SavePrivateMessage(const std::string& from, const std::string& to
 }
 
 std::vector<ChatMessage> Database::GetPrivateMessages(const std::string& u1, const std::string& u2, int limit) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     std::vector<ChatMessage> out;
 
     sqlite3_stmt* stmt;
@@ -604,6 +689,7 @@ std::vector<ChatMessage> Database::GetPrivateMessages(const std::string& u1, con
 }
 
 bool Database::UpdateProfile(const std::string& username, const std::string& bio, const std::string& pfp_url) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     sqlite3_stmt* stmt;
     const char* sql = "UPDATE accounts SET bio = ?, pfp_url = ? WHERE username = ?;";
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
@@ -616,6 +702,7 @@ bool Database::UpdateProfile(const std::string& username, const std::string& bio
 }
 
 UserProfileInfo Database::GetProfile(const std::string& username) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     UserProfileInfo info;
     info.username = username;
     sqlite3_stmt* stmt;
@@ -634,6 +721,7 @@ UserProfileInfo Database::GetProfile(const std::string& username) {
 }
 
 std::vector<UserProfileInfo> Database::GetServerMembersDetailed(int serverId) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     std::vector<UserProfileInfo> members;
     sqlite3_stmt* stmt;
     const char* sql = "SELECT m.username, a.bio, a.pfp_url, m.role, m.is_muted "

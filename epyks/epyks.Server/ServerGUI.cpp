@@ -155,11 +155,14 @@ void ServerGUI::DrawMainWindow() {
                     ImGui::Text("No servers exist.");
                 }
                 for (auto& s : servers_list) {
-                    ImGui::Text("[%d] %s", s.first, s.second.c_str());
+                    int sid = std::get<0>(s);
+                    std::string& sname = std::get<1>(s);
+                    bool hasPass = std::get<2>(s);
+                    ImGui::Text("[%d] %s%s", sid, sname.c_str(), hasPass ? " (Locked)" : "");
                     ImGui::SameLine();
-                    if (ImGui::Button(("Delete##" + std::to_string(s.first)).c_str())) {
-                        database->DeleteServer(s.first);
-                        AddLog("[System] Deleted server: " + s.second);
+                    if (ImGui::Button(("Delete##" + std::to_string(sid)).c_str())) {
+                        database->DeleteServer(sid);
+                        AddLog("[System] Deleted server: " + sname);
                     }
                 }
             }

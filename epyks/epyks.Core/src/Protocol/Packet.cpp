@@ -313,25 +313,30 @@ namespace epyks {
         std::vector<uint8_t> result;
         uint32_t sid = (uint32_t)server_id;
         uint32_t cid = (uint32_t)channel_id;
-        uint32_t contentLen = (uint32_t)content.size();
-        result.resize(12);
+        uint32_t uLen = (uint32_t)username.size();
+        uint32_t cLen = (uint32_t)content.size();
+        result.resize(16);
         std::memcpy(result.data(), &sid, 4);
         std::memcpy(result.data() + 4, &cid, 4);
-        std::memcpy(result.data() + 8, &contentLen, 4);
+        std::memcpy(result.data() + 8, &uLen, 4);
+        std::memcpy(result.data() + 12, &cLen, 4);
+        result.insert(result.end(), username.begin(), username.end());
         result.insert(result.end(), content.begin(), content.end());
         return result;
     }
 
     bool ServerMessage::Deserialize(const std::vector<uint8_t>& bytes) {
-        if (bytes.size() < 12) return false;
-        uint32_t sid = 0, cid = 0, contentLen = 0;
+        if (bytes.size() < 16) return false;
+        uint32_t sid = 0, cid = 0, uLen = 0, cLen = 0;
         std::memcpy(&sid, bytes.data(), 4);
         std::memcpy(&cid, bytes.data() + 4, 4);
-        std::memcpy(&contentLen, bytes.data() + 8, 4);
-        if (bytes.size() != 12 + contentLen) return false;
+        std::memcpy(&uLen, bytes.data() + 8, 4);
+        std::memcpy(&cLen, bytes.data() + 12, 4);
+        if (bytes.size() != 16 + uLen + cLen) return false;
         server_id = sid;
         channel_id = cid;
-        content.assign(bytes.begin() + 12, bytes.end());
+        username.assign(bytes.begin() + 16, bytes.begin() + 16 + uLen);
+        content.assign(bytes.begin() + 16 + uLen, bytes.end());
         return true;
 	}
 
@@ -339,25 +344,33 @@ namespace epyks {
         std::vector<uint8_t> result;
         uint32_t sid = (uint32_t)server_id;
         uint32_t ctype = (uint32_t)type;
-        uint32_t len = (uint32_t)channel_name.size();
-        result.resize(12);
+        uint32_t nameLen = (uint32_t)channel_name.size();
+        uint32_t catLen = (uint32_t)category.size();
+        
+        result.resize(16);
         std::memcpy(result.data(), &sid, 4);
         std::memcpy(result.data() + 4, &ctype, 4);
-        std::memcpy(result.data() + 8, &len, 4);
+        std::memcpy(result.data() + 8, &nameLen, 4);
+        std::memcpy(result.data() + 12, &catLen, 4);
+        
         result.insert(result.end(), channel_name.begin(), channel_name.end());
+        result.insert(result.end(), category.begin(), category.end());
         return result;
     }
 
     bool CreateChannel::Deserialize(const std::vector<uint8_t>& bytes) {
-        if (bytes.size() < 12) return false;
-        uint32_t sid = 0, ctype = 0, len = 0;
+        if (bytes.size() < 16) return false;
+        uint32_t sid = 0, ctype = 0, nameLen = 0, catLen = 0;
         std::memcpy(&sid, bytes.data(), 4);
         std::memcpy(&ctype, bytes.data() + 4, 4);
-        std::memcpy(&len, bytes.data() + 8, 4);
-        if (bytes.size() != 12 + len) return false;
+        std::memcpy(&nameLen, bytes.data() + 8, 4);
+        std::memcpy(&catLen, bytes.data() + 12, 4);
+        
+        if (bytes.size() != 16 + nameLen + catLen) return false;
         server_id = sid;
         type = ctype;
-        channel_name.assign(bytes.begin() + 12, bytes.end());
+        channel_name.assign(bytes.begin() + 16, bytes.begin() + 16 + nameLen);
+        category.assign(bytes.begin() + 16 + nameLen, bytes.end());
         return true;
     }
 
@@ -593,10 +606,17 @@ namespace epyks {
             uint32_t uLen = (uint32_t)m.username.size();
             uint32_t bLen = (uint32_t)m.bio.size();
             uint32_t pLen = (uint32_t)m.pfp_url.size();
-            uint32_t meta[5] = { uLen, bLen, pLen, (uint32_t)m.role, (uint32_t)(m.is_muted ? 1 : 0) };
+            // Meta: uLen, bLen, pLen, role, muted (1), voice_channel_id, talking (1)
+            // Total meta: 4+4+4+4+1+4+1 = 22 bytes
+            uint32_t meta4[5] = { uLen, bLen, pLen, (uint32_t)m.role, (uint32_t)m.voice_channel_id };
+            uint8_t meta1[2] = { (uint8_t)(m.is_muted ? 1 : 0), (uint8_t)(m.is_talking ? 1 : 0) };
+            
             size_t start = result.size();
-            result.resize(start + 20);
-            std::memcpy(result.data() + start, meta, 20);
+            result.resize(start + 22);
+            std::memcpy(result.data() + start, meta4, 20); // First 5 ints (20 bytes)
+            std::memcpy(result.data() + start + 20, &meta1[0], 1); // muted
+            std::memcpy(result.data() + start + 21, &meta1[1], 1); // talking
+            
             result.insert(result.end(), m.username.begin(), m.username.end());
             result.insert(result.end(), m.bio.begin(), m.bio.end());
             result.insert(result.end(), m.pfp_url.begin(), m.pfp_url.end());
@@ -612,20 +632,25 @@ namespace epyks {
         size_t offset = 8;
         members.clear();
         for (uint32_t i = 0; i < count; ++i) {
-            if (offset + 20 > bytes.size()) return false;
-            uint32_t meta[5];
-            std::memcpy(meta, bytes.data() + offset, 20);
-            offset += 20;
-            if (offset + meta[0] + meta[1] + meta[2] > bytes.size()) return false;
+            if (offset + 22 > bytes.size()) return false;
+            uint32_t meta4[5];
+            std::memcpy(meta4, bytes.data() + offset, 20);
+            uint8_t muted = bytes[offset + 20];
+            uint8_t talking = bytes[offset + 21];
+            offset += 22;
+            
+            if (offset + meta4[0] + meta4[1] + meta4[2] > bytes.size()) return false;
             MemberInfo m;
-            m.username.assign(bytes.begin() + offset, bytes.begin() + offset + meta[0]);
-            offset += meta[0];
-            m.bio.assign(bytes.begin() + offset, bytes.begin() + offset + meta[1]);
-            offset += meta[1];
-            m.pfp_url.assign(bytes.begin() + offset, bytes.begin() + offset + meta[2]);
-            offset += meta[2];
-            m.role = (int)meta[3];
-            m.is_muted = meta[4] != 0;
+            m.username.assign(bytes.begin() + offset, bytes.begin() + offset + meta4[0]);
+            offset += meta4[0];
+            m.bio.assign(bytes.begin() + offset, bytes.begin() + offset + meta4[1]);
+            offset += meta4[1];
+            m.pfp_url.assign(bytes.begin() + offset, bytes.begin() + offset + meta4[2]);
+            offset += meta4[2];
+            m.role = (int)meta4[3];
+            m.voice_channel_id = (int)meta4[4];
+            m.is_muted = muted != 0;
+            m.is_talking = talking != 0;
             members.push_back(m);
         }
         return true;

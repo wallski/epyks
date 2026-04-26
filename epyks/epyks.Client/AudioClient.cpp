@@ -211,6 +211,8 @@ bool AudioClient::SetDevices(const std::string& inputName, const std::string& ou
         return false;
     }
 
+    m_currentInputName = inputName;
+    m_currentOutputName = outputName;
     if (wasActive) StartVoice();
     return true;
 }
@@ -239,10 +241,18 @@ void AudioClient::DataCallback(ma_device* pDevice, void* pOutput, const void* pI
 
 void AudioClient::ProcessAudio(void* pOutput, const void* pInput, unsigned int frameCount) {
     // 1. Process Capture (Input -> Encode -> m_outQueue)
-    if (pInput != NULL) {
+    if (pInput != NULL && !m_isMuted && !m_isDeafened) {
         const opus_int16* pcmInput = (const opus_int16*)pInput;
-        unsigned char cbits[MAX_PACKET_SIZE];
+        
+        // Simple speaking detection (RMS volume)
+        long long sumSquare = 0;
+        for (unsigned int i = 0; i < frameCount; ++i) {
+            sumSquare += (long long)pcmInput[i] * pcmInput[i];
+        }
+        double rms = sqrt((double)sumSquare / frameCount);
+        m_isSpeaking = (rms > 500.0); // Threshold for speaking detection
 
+        unsigned char cbits[MAX_PACKET_SIZE];
         // Ensure frameCount matches Opus expected frame size
         int nbBytes = opus_encode(m_encoder, pcmInput, frameCount, cbits, MAX_PACKET_SIZE);
         if (nbBytes > 0) {
@@ -250,32 +260,30 @@ void AudioClient::ProcessAudio(void* pOutput, const void* pInput, unsigned int f
             std::lock_guard<std::mutex> lock(m_outMutex);
             m_outQueue.push(encodedPacket);
         }
+    } else {
+        m_isSpeaking = false;
     }
 
     // 2. Process Playback (m_inQueue -> Decode -> Output)
     if (pOutput != NULL) {
-        opus_int16* pcmOutput = (opus_int16*)pOutput;
-        
-        std::vector<uint8_t> encodedPacket;
-        bool hasData = false;
-        {
-            std::lock_guard<std::mutex> lock(m_inMutex);
-            if (!m_inQueue.empty()) {
-                encodedPacket = m_inQueue.front();
-                m_inQueue.pop();
-                hasData = true;
+        memset(pOutput, 0, frameCount * CHANNELS * sizeof(opus_int16));
+        if (!m_isDeafened) {
+            opus_int16* pcmOutput = (opus_int16*)pOutput;
+            
+            std::vector<uint8_t> encodedPacket;
+            bool hasData = false;
+            {
+                std::lock_guard<std::mutex> lock(m_inMutex);
+                if (!m_inQueue.empty()) {
+                    encodedPacket = m_inQueue.front();
+                    m_inQueue.pop();
+                    hasData = true;
+                }
             }
-        }
 
-        if (hasData) {
-            int frame_size = opus_decode(m_decoder, encodedPacket.data(), (opus_int32)encodedPacket.size(), pcmOutput, frameCount, 0);
-            if (frame_size < 0) {
-                // Decode error, fill with silence
-                memset(pOutput, 0, frameCount * CHANNELS * sizeof(opus_int16));
+            if (hasData) {
+                opus_decode(m_decoder, encodedPacket.data(), (opus_int32)encodedPacket.size(), pcmOutput, frameCount, 0);
             }
-        } else {
-            // No incoming voice data, output silence
-            memset(pOutput, 0, frameCount * CHANNELS * sizeof(opus_int16));
         }
     }
 }
