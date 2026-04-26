@@ -44,16 +44,19 @@ Epyks leverages a custom binary protocol and a high-performance rendering engine
 - **Development Environment**: Visual Studio 2022
 - **Dependencies**: C++17 Toolset
 
-### Building from Source
-1. Clone the repository including submodules.
+### Building the Client
+1. Clone the repository.
 2. Open `epyks/epyks.sln` in Visual Studio 2022.
 3. Set the build configuration to **Release / x64**.
-4. Build the solution to generate the Server and Client executables.
+4. Build the `epyks.Client` project.
 
-### Deployment
-1. **Server**: Launch `epyks.Server.exe`. The server will initialize the SQLite database on its first run and begin listening for connections on the default port (9001).
-2. **Client**: Launch `epyks.Client.exe`. Connect to your server's IP address and register a new account or sign in with existing credentials.
+### Usage
+1. Launch `epyks.Client.exe`.
+2. The client will automatically connect to the Epyks network.
+3. Register a new account or sign in with your existing credentials to start chatting.
+
+## Security and Privacy
+Epyks is designed with security in mind. All communication uses a custom binary protocol, and authentication is handled via secure, salted password hashing. Session data is stored locally in the `%APPDATA%\Epyks` directory.
 
 ## License
-
 This project is licensed under the MIT License.
