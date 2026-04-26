@@ -230,21 +230,31 @@ public:
     send(sock, (char *)data.data(), len, 0);
   }
 
-  bool Connect(const char *ip, int port) {
+  bool Connect(const char* host, int port) {
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
-    sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    inet_pton(AF_INET, ip, &addr.sin_addr);
-    if (connect(sock, (sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR)
-      return false;
-    connected = true;
 
-    serverIp = ip;
+    struct addrinfo hints = {}, * res;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    std::string portStr = std::to_string(port);
+    if (getaddrinfo(host, portStr.c_str(), &hints, &res) != 0) {
+        return false;
+    }
+
+    sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (connect(sock, res->ai_addr, (int)res->ai_addrlen) == SOCKET_ERROR) {
+        freeaddrinfo(res);
+        return false;
+    }
+
+    serverUdpAddr = *(sockaddr_in*)res->ai_addr;
+    freeaddrinfo(res);
+    connected = true;
+    serverIp = host;
     serverPort = port;
-    serverUdpAddr = addr;
 
     udpSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (udpSock != INVALID_SOCKET) {
@@ -1452,8 +1462,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
   bool isConnecting = false;
   bool triedAutoLogin = false;
 
-  // HARDCODE YOUR SERVER ADDRESS HERE (e.g. "epyks-server.playit.gg" or your Cloud IP)
-  char serverIP[64] = "127.0.0.1"; 
+  // HARDCODE YOUR SERVER ADDRESS HERE
+  char serverIP[64] = "later-later.gl.joinmc.link"; 
+  int serverPort = 25565; // Default for Minecraft tunnels
   char usernameBuf[64] = "";
   char passwordBuf[64] = "";
   char regUser[64] = "";
@@ -1517,7 +1528,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
     if (triedAutoLogin && !isConnecting) {
       isConnecting = true;
-      if (client.Connect(serverIP, 9001)) {
+      if (client.Connect(serverIP, serverPort)) {
         client.TokenLogin(usernameBuf, client.sessionToken);
       } else {
         isConnecting = false;
@@ -1671,7 +1682,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
           if (strlen(regUser) >= 3 && strlen(regPass) >= 4 &&
               strcmp(regPass, regConfirm) == 0) {
             isConnecting = true;
-            if (client.Connect(serverIP, 9001)) {
+            if (client.Connect(serverIP, serverPort)) {
               client.Register(regUser, regPass);
             } else {
               isConnecting = false;
@@ -1707,7 +1718,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         if (ImGui::Button("Log In", ImVec2(340, 45)) ||
             (ImGui::IsKeyPressed(ImGuiKey_Enter) && !isConnecting)) {
           isConnecting = true;
-          if (client.Connect(serverIP, 9001)) {
+          if (client.Connect(serverIP, serverPort)) {
             client.Login(usernameBuf, passwordBuf);
           } else {
             isConnecting = false;
