@@ -1537,8 +1537,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
   bool triedAutoLogin = false;
 
   // HARDCODE YOUR SERVER ADDRESS HERE
-  char serverIP[64] = "127.0.0.1";
-  int serverPort = 9001;
+  static char serverIP[64] = "26.79.18.226";
+  static int serverPort = 9001;
   char usernameBuf[64] = "";
   char passwordBuf[64] = "";
   char regUser[64] = "";
@@ -1613,7 +1613,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     // DEBUG: Press F1 to connect to LOCALHOST for testing
     if (ImGui::IsKeyPressed(ImGuiKey_F1) && !isConnecting) {
       isConnecting = true;
-      if (client.Connect("127.0.0.1", 9001)) {
+      if (client.Connect(serverIP, serverPort)) {
         client.Login(usernameBuf, passwordBuf);
       } else {
         isConnecting = false;
@@ -1776,15 +1776,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::InputText("##regconf", regConfirm, 64,
                          ImGuiInputTextFlags_Password);
 
-        ImGui::SetCursorPosX(30);
-        ImGui::Text("Server Address");
-        ImGui::SetCursorPosX(30);
-        ImGui::InputText("##serverip", serverIP, sizeof(serverIP));
-        
-        ImGui::SetCursorPosX(30);
-        ImGui::Text("Port");
-        ImGui::SetCursorPosX(30);
-        ImGui::InputInt("##serverport", &serverPort);
+        // Server IP and Port are now hardcoded for the official Epyks server
 
         ImGui::Dummy(ImVec2(0, 10));
         ImGui::SetCursorPosX(30);
