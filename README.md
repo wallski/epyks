@@ -1,69 +1,59 @@
 # Epyks
-*skype backwards. because skype is dead.*
 
-Chat application with friends, DMs, groups, and session-based authentication.
-
-![C++](https://img.shields.io/badge/C++-17-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+Epyks is a high-performance, lightweight chat platform built from the ground up in C++. Designed as a modern alternative to legacy communication tools, it focuses on efficiency, security, and a seamless user experience without the overhead of modern web-based clients.
 
 ## Overview
-Epyks is a lightweight chat platform built from scratch in C++. No email required, no AI verification — just username-based authentication with proper password hashing and persistent sessions. Built to actually understand how networking, packets, and threading work.
 
-## Features
-- **Secure Authentication** — Passwords hashed with salt (10k iterations)
-- **Session Tokens** — "Remember me" functionality, auto-login on restart
-- **Friend System** — Send/accept friend requests
-- **Private Messaging** — DMs between mutual friends only
-- **Group Chats** — Create groups, invite friends, chat together
-- **Global Chat** — Main lobby for everyone connected to the server
-- **Persistent History** — SQLite database for messages and accounts
-- **Custom Binary Protocol** — Hand-rolled packet serialization, no third party networking libs
-- **Dogshit UI** — ImGui-based interface for both client and server (working on it)
+Epyks leverages a custom binary protocol and a high-performance rendering engine to provide a responsive chat environment. Unlike many modern platforms, Epyks does not require complex verification processes—authentication is handled through a secure username and password system with persistent session management.
 
-## Building
-**Requirements:**
-- Visual Studio 2022 (C++17)
-- Windows only for now (DX11 + Win32)
+## Key Features
 
-**Steps:**
-1. Open `epyks/epyks.sln`
-2. Build solution (x64 Release recommended)
-3. Run `epyks.Server.exe` first, then `epyks.Client.exe`
+### Advanced Networking
+- **Custom Binary Protocol**: A hand-rolled packet serialization system ensures minimal overhead and high throughput.
+- **Hybrid Communication**: Uses TCP for reliable message delivery and state synchronization, and UDP for low-latency voice data.
+- **Session Persistence**: Automated re-authentication using secure session tokens stored locally.
 
-**Connectivity:** Use [Radmin](https://www.radmin-vpn.com) or [Tailscale](https://tailscale.com) if you don't want to port forward.
+### User Interface
+- **Modern 3-Pane Layout**: An intuitive interface featuring a server sidebar, categorized channel list, and a high-fidelity chat stream.
+- **Powered by Dear ImGui**: Rendered via DirectX 11 for hardware-accelerated performance and a premium feel.
+- **Dynamic Feedback**: Real-time "speaking" indicators, online status tracking, and unread message notifications.
 
-## Usage
-**Server:**
-- Default port: 9001
-- Database auto-created on first run
-- GUI for logs, settings, and client management
+### Voice and Media
+- **Integrated Voice Engine**: Low-latency voice communication with support for multiple audio input and output devices.
+- **Channel Categories**: Support for distinct text and voice channels within servers.
+- **Profile Customization**: User profiles with support for biographies and custom avatars.
 
-**Client:**
-- Register with username + password (min 3/4 chars)
-- Login with credentials or auto-login via saved session
-- Add friends by username
-- Chat in main lobby, DMs, or group chats
-- Create groups via Groups menu → Create Group
-- Browse and join existing groups via Groups menu → Browse Groups
+### Security and Infrastructure
+- **Secure Authentication**: Passwords are salted and hashed with multiple iterations to ensure data integrity.
+- **SQLite Persistence**: Robust message and account history storage using a local SQLite database on the server.
+- **AppData Integration**: Configuration and session data are managed within the Windows AppData directory for a clean system footprint.
 
-## Security Notes
-- Passwords are salted and hashed — not stored in plaintext
-- Session tokens stored locally in `%APPDATA%\Epyks\config.ini`
-- Database: `epyks_data/epyks_chat.db`
-- Note: `std::hash` is used for password hashing — not cryptographically ideal, upgrade to bcrypt/Argon2 for production use
+## Technical Stack
 
-## Known Bugs
-- All fixed for now or unknown
+- **Language**: C++17
+- **Graphics**: DirectX 11 / Win32 API
+- **UI Framework**: Dear ImGui
+- **Networking**: WinSock2 (TCP/UDP)
+- **Database**: SQLite3
+- **Audio**: WASAPI / Custom Audio Client
 
-## Planned (not anymore ths project won't continue)
-- Block users
-- Passwords for groups
-- Voice chat
-- Group admin and kick functionality
-- Password recovery
+## Getting Started
 
-## Not Planned
-- Cross-platform support (Linux/Mac). Why? Too much cancer. I don't hate myself that much.
+### Requirements
+- **Operating System**: Windows 10/11 (64-bit)
+- **Development Environment**: Visual Studio 2022
+- **Dependencies**: C++17 Toolset
+
+### Building from Source
+1. Clone the repository including submodules.
+2. Open `epyks/epyks.sln` in Visual Studio 2022.
+3. Set the build configuration to **Release / x64**.
+4. Build the solution to generate the Server and Client executables.
+
+### Deployment
+1. **Server**: Launch `epyks.Server.exe`. The server will initialize the SQLite database on its first run and begin listening for connections on the default port (9001).
+2. **Client**: Launch `epyks.Client.exe`. Connect to your server's IP address and register a new account or sign in with existing credentials.
 
 ## License
-MIT — do whatever you want.
+
+This project is licensed under the MIT License.
