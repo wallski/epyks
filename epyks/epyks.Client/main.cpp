@@ -2,13 +2,20 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+
 #include "AudioClient.h"
 #include "Protocol/Packet.h"
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
+#include <algorithm>
 #include <atomic>
+#include <commdlg.h>
 #include <d3d11.h>
+#include <dwmapi.h>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -17,14 +24,8 @@
 #include <string>
 #include <tchar.h>
 #include <thread>
-#include <vector>
-#include <windows.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <commdlg.h>
 #include <tuple>
-#include <algorithm>
-#include <dwmapi.h>
+#include <vector>
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "comdlg32.lib")
@@ -33,51 +34,53 @@
 #include "../../deps/stb/stb_image.h"
 
 struct TextureInfo {
-    ID3D11ShaderResourceView* srv = nullptr;
-    int width = 0;
-    int height = 0;
+  ID3D11ShaderResourceView *srv = nullptr;
+  int width = 0;
+  int height = 0;
 };
 static std::map<std::string, TextureInfo> g_textureCache;
 
-TextureInfo LoadTextureFromFile(const char* filename, ID3D11Device* pd3dDevice) {
-    TextureInfo info;
-    int width, height, channels;
-    unsigned char* data = stbi_load(filename, &width, &height, &channels, 4);
-    if (data == NULL) return info;
-
-    D3D11_TEXTURE2D_DESC desc;
-    ZeroMemory(&desc, sizeof(desc));
-    desc.Width = width;
-    desc.Height = height;
-    desc.MipLevels = 1;
-    desc.ArraySize = 1;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    desc.SampleDesc.Count = 1;
-    desc.Usage = D3D11_USAGE_DEFAULT;
-    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    desc.CPUAccessFlags = 0;
-
-    ID3D11Texture2D* pTexture = NULL;
-    D3D11_SUBRESOURCE_DATA subResource;
-    subResource.pSysMem = data;
-    subResource.SysMemPitch = width * 4;
-    subResource.SysMemSlicePitch = 0;
-    pd3dDevice->CreateTexture2D(&desc, &subResource, &pTexture);
-
-    if (pTexture) {
-        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
-        ZeroMemory(&srvDesc, sizeof(srvDesc));
-        srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Texture2D.MipLevels = 1;
-        pd3dDevice->CreateShaderResourceView(pTexture, &srvDesc, &info.srv);
-        pTexture->Release();
-        info.width = width;
-        info.height = height;
-    }
-
-    stbi_image_free(data);
+TextureInfo LoadTextureFromFile(const char *filename,
+                                ID3D11Device *pd3dDevice) {
+  TextureInfo info;
+  int width, height, channels;
+  unsigned char *data = stbi_load(filename, &width, &height, &channels, 4);
+  if (data == NULL)
     return info;
+
+  D3D11_TEXTURE2D_DESC desc;
+  ZeroMemory(&desc, sizeof(desc));
+  desc.Width = width;
+  desc.Height = height;
+  desc.MipLevels = 1;
+  desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_DEFAULT;
+  desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  desc.CPUAccessFlags = 0;
+
+  ID3D11Texture2D *pTexture = NULL;
+  D3D11_SUBRESOURCE_DATA subResource;
+  subResource.pSysMem = data;
+  subResource.SysMemPitch = width * 4;
+  subResource.SysMemSlicePitch = 0;
+  pd3dDevice->CreateTexture2D(&desc, &subResource, &pTexture);
+
+  if (pTexture) {
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
+    ZeroMemory(&srvDesc, sizeof(srvDesc));
+    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+    pd3dDevice->CreateShaderResourceView(pTexture, &srvDesc, &info.srv);
+    pTexture->Release();
+    info.width = width;
+    info.height = height;
+  }
+
+  stbi_image_free(data);
+  return info;
 }
 
 static ID3D11Device *g_pd3dDevice = nullptr;
@@ -105,6 +108,24 @@ std::string GetIniPath() {
   GetEnvironmentVariableA("APPDATA", path, MAX_PATH);
   fs::create_directories(std::string(path) + "\\Epyks");
   return std::string(path) + "\\Epyks\\imgui.ini";
+}
+
+std::string GetLogPath() {
+  char path[MAX_PATH];
+  GetEnvironmentVariableA("APPDATA", path, MAX_PATH);
+  return std::string(path) + "\\Epyks\\client_log.txt";
+}
+
+void LogToFile(const std::string &message) {
+  std::ofstream file(GetLogPath(), std::ios::app);
+  if (file.is_open()) {
+    auto now =
+        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    struct tm ltm;
+    localtime_s(&ltm, &now);
+    file << "[" << std::put_time(&ltm, "%Y-%m-%d %H:%M:%S") << "] " << message
+         << std::endl;
+  }
 }
 
 void SaveConfig(const std::string &username, const std::string &token,
@@ -150,8 +171,8 @@ struct Channel {
 };
 
 struct Message {
-    std::string sender;
-    std::string content;
+  std::string sender;
+  std::string content;
 };
 
 struct ServerChat {
@@ -163,9 +184,7 @@ struct ServerChat {
 
 class ChatClient {
 public:
-  ChatClient() {
-      audio.Initialize();
-  }
+  ChatClient() { audio.Initialize(); }
 
   SOCKET sock = INVALID_SOCKET;
   std::atomic<bool> connected{false};
@@ -201,11 +220,11 @@ public:
   bool showProfileModal = false;
   std::string lastServerOpStatus = "";
   epyks::UserProfile selectedProfile;
-  
+
   bool showVoiceCallWindow = false;
   bool isMuted = false;
   bool isDeafened = false;
-  
+
   bool showPasswordModal = false;
   int targetServerToJoin = -1;
   char serverPassBuf[64] = {0};
@@ -214,6 +233,7 @@ public:
   std::atomic<bool> loginFailed{false};
   std::string loginErrorMsg;
   std::string sessionToken;
+  std::mutex stateMutex;
 
   void SendUnfriend(const std::string &target) {
     if (!connected)
@@ -230,31 +250,48 @@ public:
     send(sock, (char *)data.data(), len, 0);
   }
 
-  bool Connect(const char* host, int port) {
-    WSADATA wsaData;
-    WSAStartup(MAKEWORD(2, 2), &wsaData);
+  bool Connect(const char *host, int port) {
+    if (connected && serverIp == host && serverPort == port)
+      return true;
 
-    struct addrinfo hints = {}, * res;
+    LogToFile("Forcefully disconnecting old connection for new attempt...");
+    Disconnect();
+
+    LogToFile("Attempting to connect to host: " + std::string(host) +
+              " on port: " + std::to_string(port));
+
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+      LogToFile("WSAStartup failed.");
+      return false;
+    }
+
+    struct addrinfo hints = {}, *res;
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
 
     std::string portStr = std::to_string(port);
     if (getaddrinfo(host, portStr.c_str(), &hints, &res) != 0) {
-        return false;
+      LogToFile("DNS Resolution failed for host: " + std::string(host));
+      return false;
     }
 
     sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (connect(sock, res->ai_addr, (int)res->ai_addrlen) == SOCKET_ERROR) {
-        freeaddrinfo(res);
-        return false;
+      LogToFile("Socket connect() failed. Error: " +
+                std::to_string(WSAGetLastError()));
+      freeaddrinfo(res);
+      return false;
     }
 
-    serverUdpAddr = *(sockaddr_in*)res->ai_addr;
+    serverUdpAddr = *(sockaddr_in *)res->ai_addr;
     freeaddrinfo(res);
     connected = true;
     serverIp = host;
     serverPort = port;
+
+    LogToFile("Successfully connected to server.");
 
     udpSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (udpSock != INVALID_SOCKET) {
@@ -262,8 +299,6 @@ public:
       ioctlsocket(udpSock, FIONBIO, &mode); // Non-blocking UDP socket
       udpThread = std::thread(&ChatClient::UdpLoop, this);
     }
-
-
 
     recvThread = std::thread(&ChatClient::ReceiveLoop, this);
     return true;
@@ -351,16 +386,19 @@ public:
             std::vector<uint8_t>(packet.data.begin(), packet.data.end());
         if (resp.Deserialize(bytes)) {
           if (resp.success) {
+            std::lock_guard<std::mutex> stateLock(stateMutex);
             sessionToken = resp.session_token;
             loginSuccess = true;
             myProfile.username = username;
-            myProfile.pfp_url = ""; // Will be updated by RequestProfile
+            myProfile.pfp_url = "";
             userProfileCache[username] = myProfile;
-            SaveConfig(username, sessionToken, audio.GetCurrentInputDevice(), audio.GetCurrentOutputDevice());
+            SaveConfig(username, sessionToken, audio.GetCurrentInputDevice(),
+                       audio.GetCurrentOutputDevice());
             RequestMyServers();
             RequestFriendList();
-            RequestProfile("", true); // Get our full profile silently
+            RequestProfile("", true);
           } else {
+            std::lock_guard<std::mutex> stateLock(stateMutex);
             loginFailed = true;
             loginErrorMsg = resp.error;
           }
@@ -371,9 +409,11 @@ public:
             std::vector<uint8_t>(packet.data.begin(), packet.data.end());
         if (resp.Deserialize(bytes)) {
           if (resp.success) {
+            std::lock_guard<std::mutex> stateLock(stateMutex);
             loginSuccess = true;
             loginErrorMsg = "REGISTER_SUCCESS";
           } else {
+            std::lock_guard<std::mutex> stateLock(stateMutex);
             loginFailed = true;
             loginErrorMsg = resp.error;
           }
@@ -387,9 +427,9 @@ public:
           m.sender = msg.username;
           m.content = msg.content;
           servers[msg.server_id].channelMessages[msg.channel_id].push_back(m);
-          
+
           if (userProfileCache.find(m.sender) == userProfileCache.end()) {
-              RequestProfile(m.sender, true);
+            RequestProfile(m.sender, true);
           }
         }
       } else if (packet.type == epyks::PacketType::CREATE_SERVER) {
@@ -401,16 +441,16 @@ public:
       } else if (packet.type == epyks::PacketType::CREATE_CHANNEL) {
         lastServerOpStatus = packet.data;
         if (currentServerId != -1) {
-            epyks::ChannelList req;
-            req.server_id = currentServerId;
-            auto reqBytes = req.Serialize();
-            epyks::Packet reqPkt;
-            reqPkt.type = epyks::PacketType::CHANNEL_LIST;
-            reqPkt.data = std::string(reqBytes.begin(), reqBytes.end());
-            auto data = reqPkt.Serialize();
-            uint32_t len = (uint32_t)data.size();
-            send(sock, (char *)&len, 4, 0);
-            send(sock, (char *)data.data(), len, 0);
+          epyks::ChannelList req;
+          req.server_id = currentServerId;
+          auto reqBytes = req.Serialize();
+          epyks::Packet reqPkt;
+          reqPkt.type = epyks::PacketType::CHANNEL_LIST;
+          reqPkt.data = std::string(reqBytes.begin(), reqBytes.end());
+          auto data = reqPkt.Serialize();
+          uint32_t len = (uint32_t)data.size();
+          send(sock, (char *)&len, 4, 0);
+          send(sock, (char *)data.data(), len, 0);
         }
       } else if (packet.type == epyks::PacketType::LIST_SERVERS) {
         availableServers.clear();
@@ -422,10 +462,11 @@ public:
             continue;
           std::stringstream sSS(token);
           std::string idStr, name, hasPassStr;
-          if (std::getline(sSS, idStr, ':') && std::getline(sSS, name, ':') && std::getline(sSS, hasPassStr, ':')) {
-              int id = std::stoi(idStr);
-              bool hasPass = (hasPassStr == "1");
-              availableServers.push_back({id, name, hasPass});
+          if (std::getline(sSS, idStr, ':') && std::getline(sSS, name, ':') &&
+              std::getline(sSS, hasPassStr, ':')) {
+            int id = std::stoi(idStr);
+            bool hasPass = (hasPassStr == "1");
+            availableServers.push_back({id, name, hasPass});
           }
         }
       } else if (packet.type == epyks::PacketType::JOIN_SERVER) {
@@ -515,17 +556,17 @@ public:
               servers[list.server_id].channels.push_back(c);
             }
           }
-          
+
           // Auto-select first text channel if none selected
           if (currentServerId == list.server_id && currentChannelId == -1) {
-              for (auto& ch : servers[list.server_id].channels) {
-                  if (ch.type == 0) { // Text
-                      currentChannelId = ch.id;
-                      servers[list.server_id].channelMessages[ch.id].clear();
-                      RequestServerHistory(list.server_id, ch.id);
-                      break;
-                  }
+            for (auto &ch : servers[list.server_id].channels) {
+              if (ch.type == 0) { // Text
+                currentChannelId = ch.id;
+                servers[list.server_id].channelMessages[ch.id].clear();
+                RequestServerHistory(list.server_id, ch.id);
+                break;
               }
+            }
           }
         }
       } else if (packet.type == epyks::PacketType::UNFRIEND) {
@@ -542,18 +583,18 @@ public:
             myProfile = profile;
           }
           // Update local member cache for all servers for THIS user
-          for (auto& pair : serverMembers) {
-              for (auto& m : pair.second) {
-                  if (m.username == profile.username) {
-                      m.bio = profile.bio;
-                      m.pfp_url = profile.pfp_url;
-                  }
+          for (auto &pair : serverMembers) {
+            for (auto &m : pair.second) {
+              if (m.username == profile.username) {
+                m.bio = profile.bio;
+                m.pfp_url = profile.pfp_url;
               }
+            }
           }
           if (profile.username == pendingProfileRequest) {
             if (!pendingProfileSilent) {
-                selectedProfile = profile;
-                showProfileModal = true;
+              selectedProfile = profile;
+              showProfileModal = true;
             }
             pendingProfileRequest = "";
             pendingProfileSilent = false;
@@ -565,10 +606,10 @@ public:
             std::vector<uint8_t>(packet.data.begin(), packet.data.end());
         if (res.Deserialize(bytes)) {
           serverMembers[res.server_id] = res.members;
-          for (auto& m : res.members) {
-              userProfileCache[m.username].username = m.username;
-              userProfileCache[m.username].pfp_url = m.pfp_url;
-              userProfileCache[m.username].bio = m.bio;
+          for (auto &m : res.members) {
+            userProfileCache[m.username].username = m.username;
+            userProfileCache[m.username].pfp_url = m.pfp_url;
+            userProfileCache[m.username].bio = m.bio;
           }
         }
       }
@@ -801,7 +842,7 @@ public:
     send(sock, (char *)data.data(), len, 0);
   }
 
-  void SendJoinServer(int id, const std::string& pass = "") {
+  void SendJoinServer(int id, const std::string &pass = "") {
     if (!connected)
       return;
     epyks::JoinServer jg;
@@ -865,7 +906,8 @@ public:
     send(sock, (char *)data.data(), len, 0);
   }
 
-  void SendCreateChannel(int serverId, const std::string &name, int type, const std::string& category = "") {
+  void SendCreateChannel(int serverId, const std::string &name, int type,
+                         const std::string &category = "") {
     if (!connected)
       return;
     epyks::CreateChannel cc;
@@ -1116,28 +1158,33 @@ struct AppConfig {
 };
 
 void DrawHomeIcon(ImVec2 center, float size, ImU32 color) {
-    ImDrawList* draw = ImGui::GetWindowDrawList();
-    float h = size * 0.4f;
-    float w = size * 0.4f;
-    ImVec2 p[5] = {
-        {center.x, center.y - h},
-        {center.x - w, center.y},
-        {center.x - w, center.y + h},
-        {center.x + w, center.y + h},
-        {center.x + w, center.y}
-    };
-    draw->AddPolyline(p, 5, color, ImDrawFlags_Closed, 2.0f);
+  ImDrawList *draw = ImGui::GetWindowDrawList();
+  float h = size * 0.4f;
+  float w = size * 0.4f;
+  ImVec2 p[5] = {{center.x, center.y - h},
+                 {center.x - w, center.y},
+                 {center.x - w, center.y + h},
+                 {center.x + w, center.y + h},
+                 {center.x + w, center.y}};
+  draw->AddPolyline(p, 5, color, ImDrawFlags_Closed, 2.0f);
 }
 
 void DrawBrowserIcon(ImVec2 center, float size, ImU32 color) {
-    ImDrawList* draw = ImGui::GetWindowDrawList();
-    float r = size * 0.45f;
-    draw->AddCircle(center, r, color, 0, 2.0f);
-    // Vertical "meridians"
-    draw->AddBezierCubic(ImVec2(center.x, center.y - r), ImVec2(center.x - r * 0.5f, center.y - r * 0.5f), ImVec2(center.x - r * 0.5f, center.y + r * 0.5f), ImVec2(center.x, center.y + r), color, 1.5f);
-    draw->AddBezierCubic(ImVec2(center.x, center.y - r), ImVec2(center.x + r * 0.5f, center.y - r * 0.5f), ImVec2(center.x + r * 0.5f, center.y + r * 0.5f), ImVec2(center.x, center.y + r), color, 1.5f);
-    // Horizontal "equator"
-    draw->AddLine(ImVec2(center.x - r, center.y), ImVec2(center.x + r, center.y), color, 1.5f);
+  ImDrawList *draw = ImGui::GetWindowDrawList();
+  float r = size * 0.45f;
+  draw->AddCircle(center, r, color, 0, 2.0f);
+  // Vertical "meridians"
+  draw->AddBezierCubic(ImVec2(center.x, center.y - r),
+                       ImVec2(center.x - r * 0.5f, center.y - r * 0.5f),
+                       ImVec2(center.x - r * 0.5f, center.y + r * 0.5f),
+                       ImVec2(center.x, center.y + r), color, 1.5f);
+  draw->AddBezierCubic(ImVec2(center.x, center.y - r),
+                       ImVec2(center.x + r * 0.5f, center.y - r * 0.5f),
+                       ImVec2(center.x + r * 0.5f, center.y + r * 0.5f),
+                       ImVec2(center.x, center.y + r), color, 1.5f);
+  // Horizontal "equator"
+  draw->AddLine(ImVec2(center.x - r, center.y), ImVec2(center.x + r, center.y),
+                color, 1.5f);
 }
 
 void DrawAvatar(const std::string &username, const std::string &pfpUrl,
@@ -1148,50 +1195,52 @@ void DrawAvatar(const std::string &username, const std::string &pfpUrl,
   float r = size * 0.5f;
 
   if (talking) {
-      dl->AddCircle(center, r + 2.0f, ImColor(35, 165, 89), 32, 3.0f);
+    dl->AddCircle(center, r + 2.0f, ImColor(35, 165, 89), 32, 3.0f);
   }
 
   bool textureDrawn = false;
   if (!pfpUrl.empty()) {
-      auto it = g_textureCache.find(pfpUrl);
-      if (it == g_textureCache.end()) {
-          // Try to load
-          TextureInfo info = LoadTextureFromFile(pfpUrl.c_str(), g_pd3dDevice);
-          if (info.srv) {
-              g_textureCache[pfpUrl] = info;
-              it = g_textureCache.find(pfpUrl);
-          }
+    auto it = g_textureCache.find(pfpUrl);
+    if (it == g_textureCache.end()) {
+      // Try to load
+      TextureInfo info = LoadTextureFromFile(pfpUrl.c_str(), g_pd3dDevice);
+      if (info.srv) {
+        g_textureCache[pfpUrl] = info;
+        it = g_textureCache.find(pfpUrl);
       }
+    }
 
-      if (it != g_textureCache.end() && it->second.srv) {
-          // Draw circle clipped texture
-          dl->PathArcTo(center, r, 0, 3.14159f * 2.0f, 32);
-          dl->PathFillConvex(IM_COL32(255, 255, 255, 255)); // Mask or background
-          
-          // Using ImGui::Image would be easier but we are in a custom DrawList
-          // We'll use AddImageQuad or just AddImage with a circular clip if possible
-          // For now, let's just do a simple square image with rounding
-          dl->AddImageRounded(it->second.srv, c, {c.x + size, c.y + size}, {0,0}, {1,1}, IM_COL32_WHITE, r);
-          textureDrawn = true;
-      }
+    if (it != g_textureCache.end() && it->second.srv) {
+      // Draw circle clipped texture
+      dl->PathArcTo(center, r, 0, 3.14159f * 2.0f, 32);
+      dl->PathFillConvex(IM_COL32(255, 255, 255, 255)); // Mask or background
+
+      // Using ImGui::Image would be easier but we are in a custom DrawList
+      // We'll use AddImageQuad or just AddImage with a circular clip if
+      // possible For now, let's just do a simple square image with rounding
+      dl->AddImageRounded(it->second.srv, c, {c.x + size, c.y + size}, {0, 0},
+                          {1, 1}, IM_COL32_WHITE, r);
+      textureDrawn = true;
+    }
   }
 
   if (!textureDrawn) {
-      // Placeholder circle with initial
-      uint32_t h = 5381;
-      for (char ch : username)
-        h = ((h << 5) + h) + (unsigned char)ch;
-      static ImU32 pal[] = {
-          IM_COL32(88, 101, 242, 255), IM_COL32(87, 242, 135, 255),
-          IM_COL32(254, 231, 92, 255), IM_COL32(235, 69, 158, 255),
-          IM_COL32(0, 185, 255, 255),  IM_COL32(250, 119, 0, 255)};
-      dl->AddCircleFilled(center, r, pal[h % 6]);
+    // Placeholder circle with initial
+    uint32_t h = 5381;
+    for (char ch : username)
+      h = ((h << 5) + h) + (unsigned char)ch;
+    static ImU32 pal[] = {
+        IM_COL32(88, 101, 242, 255), IM_COL32(87, 242, 135, 255),
+        IM_COL32(254, 231, 92, 255), IM_COL32(235, 69, 158, 255),
+        IM_COL32(0, 185, 255, 255),  IM_COL32(250, 119, 0, 255)};
+    dl->AddCircleFilled(center, r, pal[h % 6]);
 
-      if (!username.empty()) {
-        char s[2] = {(char)toupper((unsigned char)username[0]), 0};
-        ImVec2 ts = ImGui::CalcTextSize(s);
-        dl->AddText({center.x - ts.x * .5f, center.y - ts.y * .5f}, IM_COL32_WHITE, s);
-      }
+    if (!username.empty()) {
+      char s[2] = {(char)toupper((unsigned char)username[0]), 0};
+      ImVec2 ts = ImGui::CalcTextSize(s);
+      dl->AddText({center.x - ts.x * .5f, center.y - ts.y * .5f},
+                  IM_COL32_WHITE, s);
+    }
   }
 
   ImGui::Dummy(ImVec2(size, size));
@@ -1233,7 +1282,8 @@ void DrawProfileModal(ChatClient &client, const epyks::UserProfile &profile,
     ImGui::BeginGroup();
     ImGui::TextDisabled("ABOUT ME");
     ImGui::PushTextWrapPos(380);
-    ImGui::Text("%s", profile.bio.empty() ? "No bio set." : profile.bio.c_str());
+    ImGui::Text("%s",
+                profile.bio.empty() ? "No bio set." : profile.bio.c_str());
     ImGui::PopTextWrapPos();
     ImGui::EndGroup();
 
@@ -1266,149 +1316,172 @@ std::string PickLocalFile() {
   return "";
 }
 
-static void DrawCallView(ChatClient& client) {
-    // Periodically refresh member list for voice activity state
-    static uint64_t lastRefresh = 0;
-    uint64_t now = GetTickCount64();
-    if (now - lastRefresh > 500) {
-        if (client.currentServerId != -1) {
-            client.RequestMemberList(client.currentServerId);
-        }
-        lastRefresh = now;
+static void DrawCallView(ChatClient &client) {
+  // Periodically refresh member list for voice activity state
+  static uint64_t lastRefresh = 0;
+  uint64_t now = GetTickCount64();
+  if (now - lastRefresh > 500) {
+    if (client.currentServerId != -1) {
+      client.RequestMemberList(client.currentServerId);
     }
+    lastRefresh = now;
+  }
 
-    ImGui::BeginChild("CallViewContent", ImVec2(0, 0), false, ImGuiWindowFlags_NoScrollbar);
-    
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    ImVec2 p0 = ImGui::GetCursorScreenPos();
-    ImVec2 p1 = ImVec2(p0.x + ImGui::GetContentRegionAvail().x, p0.y + ImGui::GetContentRegionAvail().y);
-    drawList->AddRectFilledMultiColor(p0, p1, ImColor(30, 31, 34), ImColor(30, 31, 34), ImColor(20, 21, 23), ImColor(20, 21, 23));
+  ImGui::BeginChild("CallViewContent", ImVec2(0, 0), false,
+                    ImGuiWindowFlags_NoScrollbar);
 
-    ImGui::SetCursorPos(ImVec2(20, 20));
-    ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.5f, 1.0f), "VOICE CONNECTED");
-    
-    // Participants Grid
-    ImGui::SetCursorPos(ImVec2(50, 80));
-    ImGui::BeginGroup();
-    {
-        float cardW = 200;
-        float cardH = 240;
-        float spacing = 20;
-        int cols = (int)fmaxf(1, (ImGui::GetContentRegionAvail().x - 100) / (cardW + spacing));
-        int count = 0;
+  ImDrawList *drawList = ImGui::GetWindowDrawList();
+  ImVec2 p0 = ImGui::GetCursorScreenPos();
+  ImVec2 p1 = ImVec2(p0.x + ImGui::GetContentRegionAvail().x,
+                     p0.y + ImGui::GetContentRegionAvail().y);
+  drawList->AddRectFilledMultiColor(p0, p1, ImColor(30, 31, 34),
+                                    ImColor(30, 31, 34), ImColor(20, 21, 23),
+                                    ImColor(20, 21, 23));
 
-        auto renderMember = [&](const std::string& name, const std::string& pfp, bool talking, bool muted, bool deafened, bool local) {
-            ImGui::PushID(name.c_str());
-            ImGui::BeginChild(name.c_str(), ImVec2(cardW, cardH), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
-            ImDrawList* d = ImGui::GetWindowDrawList();
-            ImVec2 cp = ImGui::GetCursorScreenPos();
-            
-            // Background
-            d->AddRectFilled(cp, ImVec2(cp.x + cardW, cp.y + cardH), ImColor(43, 45, 49), 12.0f);
-            
-            // Outer Card Talking Ring (Removed as requested, keeping only avatar ring)
-            // if (talking && !muted && !deafened) {
-            //     d->AddRect(cp, ImVec2(cp.x + cardW, cp.y + cardH), ImColor(35, 165, 89), 12.0f, 0, 3.0f);
-            // }
+  ImGui::SetCursorPos(ImVec2(20, 20));
+  ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.5f, 1.0f), "VOICE CONNECTED");
 
-            // Avatar
-            ImGui::SetCursorPos(ImVec2(cardW*0.5f - 40, 90 - 40));
-            DrawAvatar(name, pfp, 80, talking && !muted && !deafened);
-            
-            // Name
-            ImGui::SetCursorPosY(170);
-            std::string dispName = name + (local ? " (You)" : "");
-            ImVec2 nSize = ImGui::CalcTextSize(dispName.c_str());
-            ImGui::SetCursorPosX(cardW*0.5f - nSize.x * 0.5f);
-            ImGui::TextUnformatted(dispName.c_str());
+  // Participants Grid
+  ImGui::SetCursorPos(ImVec2(50, 80));
+  ImGui::BeginGroup();
+  {
+    float cardW = 200;
+    float cardH = 240;
+    float spacing = 20;
+    int cols = (int)fmaxf(1, (ImGui::GetContentRegionAvail().x - 100) /
+                                 (cardW + spacing));
+    int count = 0;
 
-            // Status
-            if (muted || deafened) {
-                ImGui::SetCursorPosY(200);
-                const char* statusTxt = deafened ? "DEAFENED" : "MUTED";
-                ImVec2 mSize = ImGui::CalcTextSize(statusTxt);
-                ImGui::SetCursorPosX(cardW*0.5f - mSize.x * 0.5f);
-                ImGui::TextColored(ImVec4(0.85f, 0.35f, 0.35f, 1.0f), statusTxt);
-            }
-            ImGui::EndChild();
-            ImGui::PopID();
+    auto renderMember = [&](const std::string &name, const std::string &pfp,
+                            bool talking, bool muted, bool deafened,
+                            bool local) {
+      ImGui::PushID(name.c_str());
+      ImGui::BeginChild(name.c_str(), ImVec2(cardW, cardH), true,
+                        ImGuiWindowFlags_NoScrollbar |
+                            ImGuiWindowFlags_NoBackground);
+      ImDrawList *d = ImGui::GetWindowDrawList();
+      ImVec2 cp = ImGui::GetCursorScreenPos();
 
-            count++;
-            if (count % cols != 0) ImGui::SameLine(0, spacing);
-        };
+      // Background
+      d->AddRectFilled(cp, ImVec2(cp.x + cardW, cp.y + cardH),
+                       ImColor(43, 45, 49), 12.0f);
 
-        // 1. Render Local User
-        bool localTalking = client.audio.IsSpeaking();
-        renderMember(client.username, client.myProfile.pfp_url, localTalking, client.isMuted, client.isDeafened, true);
+      // Outer Card Talking Ring (Removed as requested, keeping only avatar
+      // ring) if (talking && !muted && !deafened) {
+      //     d->AddRect(cp, ImVec2(cp.x + cardW, cp.y + cardH), ImColor(35, 165,
+      //     89), 12.0f, 0, 3.0f);
+      // }
 
-        // 2. Render Others in the same voice channel
-        if (client.currentVoiceServerId != -1) {
-            auto& members = client.serverMembers[client.currentVoiceServerId];
-            for (auto& m : members) {
-                if (m.username != client.username && m.voice_channel_id == client.currentVoiceChannelId) {
-                    renderMember(m.username, m.pfp_url, m.is_talking, m.is_muted, false, false);
-                }
-            }
-        }
-    }
-    ImGui::EndGroup();
+      // Avatar
+      ImGui::SetCursorPos(ImVec2(cardW * 0.5f - 40, 90 - 40));
+      DrawAvatar(name, pfp, 80, talking && !muted && !deafened);
 
-    // Floating Toolbar at the bottom
-    float toolbarW = 280;
-    ImGui::SetCursorPos(ImVec2((ImGui::GetWindowWidth() - toolbarW) * 0.5f, ImGui::GetWindowHeight() - 80));
-    
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 25.0f);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.12f, 0.14f, 0.95f));
-    ImGui::BeginChild("CallControls", ImVec2(toolbarW, 60), true, ImGuiWindowFlags_NoScrollbar);
-    
-    auto IconButton = [](const char* label, bool active, ImVec4 activeCol, const char* tooltip) {
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 20.0f);
-        ImGui::PushStyleColor(ImGuiCol_Button, active ? activeCol : ImVec4(0.18f, 0.19f, 0.21f, 1.0f));
-        ImGui::SetCursorPosY(10);
-        bool pressed = ImGui::Button(label, ImVec2(75, 40));
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tooltip);
-        ImGui::PopStyleColor(); ImGui::PopStyleVar();
-        return pressed;
+      // Name
+      ImGui::SetCursorPosY(170);
+      std::string dispName = name + (local ? " (You)" : "");
+      ImVec2 nSize = ImGui::CalcTextSize(dispName.c_str());
+      ImGui::SetCursorPosX(cardW * 0.5f - nSize.x * 0.5f);
+      ImGui::TextUnformatted(dispName.c_str());
+
+      // Status
+      if (muted || deafened) {
+        ImGui::SetCursorPosY(200);
+        const char *statusTxt = deafened ? "DEAFENED" : "MUTED";
+        ImVec2 mSize = ImGui::CalcTextSize(statusTxt);
+        ImGui::SetCursorPosX(cardW * 0.5f - mSize.x * 0.5f);
+        ImGui::TextColored(ImVec4(0.85f, 0.35f, 0.35f, 1.0f), statusTxt);
+      }
+      ImGui::EndChild();
+      ImGui::PopID();
+
+      count++;
+      if (count % cols != 0)
+        ImGui::SameLine(0, spacing);
     };
 
-    ImGui::SetCursorPosX(15);
-    if (IconButton(client.isMuted ? "MIC OFF" : "MIC ON", client.isMuted, ImVec4(0.9f, 0.3f, 0.3f, 1.f), "Toggle Mic")) {
-        client.isMuted = !client.isMuted;
-        client.audio.SetMute(client.isMuted);
-    }
-    ImGui::SameLine(0, 8);
-    if (IconButton(client.isDeafened ? "DEAF ON" : "DEAF OFF", client.isDeafened, ImVec4(0.9f, 0.3f, 0.3f, 1.f), "Toggle Deafen")) {
-        client.isDeafened = !client.isDeafened;
-        client.audio.SetDeafened(client.isDeafened);
-    }
-    ImGui::SameLine(0, 8);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 20.0f);
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.9f, 0.2f, 0.2f, 1.f));
-    ImGui::SetCursorPosY(10);
-    if (ImGui::Button("LEAVE", ImVec2(85, 40))) {
-        int srvId = client.currentServerId;
-        client.SendLeaveVoice();
-        client.showVoiceCallWindow = false;
-        // Switch to first text channel
-        if (srvId != -1) {
-            for (auto& c : client.servers[srvId].channels) {
-                if (c.type == 0) {
-                    client.currentChannelId = c.id;
-                    break;
-                }
-            }
+    // 1. Render Local User
+    bool localTalking = client.audio.IsSpeaking();
+    renderMember(client.username, client.myProfile.pfp_url, localTalking,
+                 client.isMuted, client.isDeafened, true);
+
+    // 2. Render Others in the same voice channel
+    if (client.currentVoiceServerId != -1) {
+      auto &members = client.serverMembers[client.currentVoiceServerId];
+      for (auto &m : members) {
+        if (m.username != client.username &&
+            m.voice_channel_id == client.currentVoiceChannelId) {
+          renderMember(m.username, m.pfp_url, m.is_talking, m.is_muted, false,
+                       false);
         }
+      }
     }
+  }
+  ImGui::EndGroup();
+
+  // Floating Toolbar at the bottom
+  float toolbarW = 280;
+  ImGui::SetCursorPos(ImVec2((ImGui::GetWindowWidth() - toolbarW) * 0.5f,
+                             ImGui::GetWindowHeight() - 80));
+
+  ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 25.0f);
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.12f, 0.14f, 0.95f));
+  ImGui::BeginChild("CallControls", ImVec2(toolbarW, 60), true,
+                    ImGuiWindowFlags_NoScrollbar);
+
+  auto IconButton = [](const char *label, bool active, ImVec4 activeCol,
+                       const char *tooltip) {
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 20.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button,
+                          active ? activeCol
+                                 : ImVec4(0.18f, 0.19f, 0.21f, 1.0f));
+    ImGui::SetCursorPosY(10);
+    bool pressed = ImGui::Button(label, ImVec2(75, 40));
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("%s", tooltip);
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
+    return pressed;
+  };
 
-    ImGui::EndChild();
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
+  ImGui::SetCursorPosX(15);
+  if (IconButton(client.isMuted ? "MIC OFF" : "MIC ON", client.isMuted,
+                 ImVec4(0.9f, 0.3f, 0.3f, 1.f), "Toggle Mic")) {
+    client.isMuted = !client.isMuted;
+    client.audio.SetMute(client.isMuted);
+  }
+  ImGui::SameLine(0, 8);
+  if (IconButton(client.isDeafened ? "DEAF ON" : "DEAF OFF", client.isDeafened,
+                 ImVec4(0.9f, 0.3f, 0.3f, 1.f), "Toggle Deafen")) {
+    client.isDeafened = !client.isDeafened;
+    client.audio.SetDeafened(client.isDeafened);
+  }
+  ImGui::SameLine(0, 8);
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 20.0f);
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.9f, 0.2f, 0.2f, 1.f));
+  ImGui::SetCursorPosY(10);
+  if (ImGui::Button("LEAVE", ImVec2(85, 40))) {
+    int srvId = client.currentServerId;
+    client.SendLeaveVoice();
+    client.showVoiceCallWindow = false;
+    // Switch to first text channel
+    if (srvId != -1) {
+      for (auto &c : client.servers[srvId].channels) {
+        if (c.type == 0) {
+          client.currentChannelId = c.id;
+          break;
+        }
+      }
+    }
+  }
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar();
 
-    ImGui::EndChild();
+  ImGui::EndChild();
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar();
+
+  ImGui::EndChild();
 }
-
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                    LPSTR lpCmdLine, int nCmdShow) {
@@ -1417,12 +1490,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                    nullptr,    nullptr,     nullptr,
                    nullptr,    _T("Epyks"), nullptr};
   RegisterClassEx(&wc);
-  HWND hwnd = CreateWindowEx(WS_EX_APPWINDOW, wc.lpszClassName, _T("Epyks"),
-                           WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX, 
-                           100, 100, 1280, 800, nullptr, nullptr, wc.hInstance, nullptr);
+  HWND hwnd = CreateWindowEx(
+      WS_EX_APPWINDOW, wc.lpszClassName, _T("Epyks"),
+      WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX,
+      100, 100, 1280, 800, nullptr, nullptr, wc.hInstance, nullptr);
 
   // Enable shadow for borderless window
-  const MARGINS shadow_margins = { 1, 1, 1, 1 };
+  const MARGINS shadow_margins = {1, 1, 1, 1};
   DwmExtendFrameIntoClientArea(hwnd, &shadow_margins);
 
   if (!CreateDeviceD3D(hwnd)) {
@@ -1463,8 +1537,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
   bool triedAutoLogin = false;
 
   // HARDCODE YOUR SERVER ADDRESS HERE
-  char serverIP[64] = "later-later.gl.joinmc.link"; 
-  int serverPort = 25565; // Default for Minecraft tunnels
+  char serverIP[64] = "127.0.0.1";
+  int serverPort = 9001;
   char usernameBuf[64] = "";
   char passwordBuf[64] = "";
   char regUser[64] = "";
@@ -1536,17 +1610,33 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
       }
     }
 
-    if (client.loginSuccess) {
-      client.loginSuccess = false;
-
-      if (client.loginErrorMsg == "REGISTER_SUCCESS") {
-        showRegister = false;
-        isConnecting = false;
-        client.loginErrorMsg = "Registration successful! Please log in.";
-        strcpy_s(usernameBuf, regUser);
-        client.Disconnect();
+    // DEBUG: Press F1 to connect to LOCALHOST for testing
+    if (ImGui::IsKeyPressed(ImGuiKey_F1) && !isConnecting) {
+      isConnecting = true;
+      if (client.Connect("127.0.0.1", 9001)) {
+        client.Login(usernameBuf, passwordBuf);
       } else {
+        isConnecting = false;
+        std::lock_guard<std::mutex> lock(client.stateMutex);
+        client.loginErrorMsg = "Local Debug Connect Failed (Server Off?)";
+      }
+    }
 
+    if (client.loginSuccess) {
+      std::string currentMsg;
+      {
+        std::lock_guard<std::mutex> lock(client.stateMutex);
+        currentMsg = client.loginErrorMsg;
+      }
+      client.loginSuccess = false;
+      if (currentMsg == "REGISTER_SUCCESS") {
+        showRegister = false;
+        {
+          std::lock_guard<std::mutex> lock(client.stateMutex);
+          client.loginErrorMsg = "Account created! Please log in.";
+        }
+        isConnecting = false;
+      } else {
         showLogin = false;
         showRegister = false;
         isConnecting = false;
@@ -1585,36 +1675,46 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
     // Custom Title Bar
     {
-        ImGui::SetNextWindowPos(ImVec2(0, 0));
-        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, 32));
-        ImGui::Begin("TitleBar", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
-        
-        // Window Dragging handled via WM_NCHITTEST in WndProc for smoothness
+      ImGui::SetNextWindowPos(ImVec2(0, 0));
+      ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, 32));
+      ImGui::Begin("TitleBar", nullptr,
+                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                       ImGuiWindowFlags_NoResize |
+                       ImGuiWindowFlags_NoSavedSettings |
+                       ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-        ImDrawList* draw = ImGui::GetWindowDrawList();
-        draw->AddRectFilled(ImVec2(0, 0), ImVec2(io.DisplaySize.x, 32), ImColor(30, 31, 34));
-        
-        ImGui::SetCursorPos(ImVec2(10, 6));
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "EPYKS");
-        
-        float btnW = 46;
-        ImGui::SetCursorPos(ImVec2(io.DisplaySize.x - btnW * 3, 0));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0,0,0,0));
-        
-        if (ImGui::Button("_", ImVec2(btnW, 32))) ShowWindow(hwnd, SW_MINIMIZE);
-        ImGui::SameLine(0, 0);
-        if (ImGui::Button("[ ]", ImVec2(btnW, 32))) {
-            if (IsZoomed(hwnd)) ShowWindow(hwnd, SW_RESTORE);
-            else ShowWindow(hwnd, SW_MAXIMIZE);
-        }
-        ImGui::SameLine(0, 0);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.2f, 0.2f, 1.0f));
-        if (ImGui::Button("X", ImVec2(btnW, 32))) PostQuitMessage(0);
-        
-        ImGui::PopStyleColor(2);
-        ImGui::PopStyleVar();
-        ImGui::End();
+      // Window Dragging handled via WM_NCHITTEST in WndProc for smoothness
+
+      ImDrawList *draw = ImGui::GetWindowDrawList();
+      draw->AddRectFilled(ImVec2(0, 0), ImVec2(io.DisplaySize.x, 32),
+                          ImColor(30, 31, 34));
+
+      ImGui::SetCursorPos(ImVec2(10, 6));
+      ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "EPYKS");
+
+      float btnW = 46;
+      ImGui::SetCursorPos(ImVec2(io.DisplaySize.x - btnW * 3, 0));
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+
+      if (ImGui::Button("_", ImVec2(btnW, 32)))
+        ShowWindow(hwnd, SW_MINIMIZE);
+      ImGui::SameLine(0, 0);
+      if (ImGui::Button("[ ]", ImVec2(btnW, 32))) {
+        if (IsZoomed(hwnd))
+          ShowWindow(hwnd, SW_RESTORE);
+        else
+          ShowWindow(hwnd, SW_MAXIMIZE);
+      }
+      ImGui::SameLine(0, 0);
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                            ImVec4(0.9f, 0.2f, 0.2f, 1.0f));
+      if (ImGui::Button("X", ImVec2(btnW, 32)))
+        PostQuitMessage(0);
+
+      ImGui::PopStyleColor(2);
+      ImGui::PopStyleVar();
+      ImGui::End();
     }
 
     ImGui::SetNextWindowPos(ImVec2(0, 32));
@@ -1676,9 +1776,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::InputText("##regconf", regConfirm, 64,
                          ImGuiInputTextFlags_Password);
 
-        ImGui::Dummy(ImVec2(0, 25));
         ImGui::SetCursorPosX(30);
-        if (ImGui::Button("Register", ImVec2(340, 45))) {
+        ImGui::Text("Server Address");
+        ImGui::SetCursorPosX(30);
+        ImGui::InputText("##serverip", serverIP, sizeof(serverIP));
+        
+        ImGui::SetCursorPosX(30);
+        ImGui::Text("Port");
+        ImGui::SetCursorPosX(30);
+        ImGui::InputInt("##serverport", &serverPort);
+
+        ImGui::Dummy(ImVec2(0, 10));
+        ImGui::SetCursorPosX(30);
+        if (ImGui::Button("Register", ImVec2(340, 45)) && !isConnecting) {
           if (strlen(regUser) >= 3 && strlen(regPass) >= 4 &&
               strcmp(regPass, regConfirm) == 0) {
             isConnecting = true;
@@ -1686,9 +1796,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
               client.Register(regUser, regPass);
             } else {
               isConnecting = false;
+              std::lock_guard<std::mutex> lock(client.stateMutex);
               client.loginErrorMsg = "Failed to connect";
             }
           } else {
+            std::lock_guard<std::mutex> lock(client.stateMutex);
             client.loginErrorMsg = "Invalid inputs or passwords mismatch";
           }
         }
@@ -1722,6 +1834,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             client.Login(usernameBuf, passwordBuf);
           } else {
             isConnecting = false;
+            std::lock_guard<std::mutex> lock(client.stateMutex);
             client.loginErrorMsg = "Failed to connect";
           }
         }
@@ -1732,10 +1845,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
       }
       ImGui::PopItemWidth();
 
-      if (!client.loginErrorMsg.empty()) {
+      std::string err;
+      {
+        std::lock_guard<std::mutex> lock(client.stateMutex);
+        err = client.loginErrorMsg;
+      }
+      if (!err.empty()) {
         ImGui::Dummy(ImVec2(0, 10));
-        centerTextColored(client.loginErrorMsg.c_str(),
-                          ImVec4(1, 0.4f, 0.4f, 1));
+        centerTextColored(err.c_str(), ImVec4(1, 0.4f, 0.4f, 1));
       }
       if (isConnecting) {
         ImGui::Dummy(ImVec2(0, 10));
@@ -1773,7 +1890,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         currentDM = "";
         client.showVoiceCallWindow = false;
       }
-      ImVec2 hmCenter = ImVec2(ImGui::GetItemRectMin().x + 25, ImGui::GetItemRectMin().y + 25);
+      ImVec2 hmCenter = ImVec2(ImGui::GetItemRectMin().x + 25,
+                               ImGui::GetItemRectMin().y + 25);
       DrawHomeIcon(hmCenter, 24, IM_COL32_WHITE);
       ImGui::PopStyleVar();
       ImGui::PopStyleColor();
@@ -1794,7 +1912,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                                 ImVec4(0.20f, 0.21f, 0.24f, 1.0f));
           ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 24.0f);
         }
-        std::string initial = srvData.serverName.empty() ? "?" : srvData.serverName.substr(0, 2);
+        std::string initial =
+            srvData.serverName.empty() ? "?" : srvData.serverName.substr(0, 2);
         if (ImGui::Button((initial + "##" + std::to_string(srvId)).c_str(),
                           ImVec2(50, 50))) {
           client.currentServerId = srvId;
@@ -1802,16 +1921,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
           client.showVoiceCallWindow = false;
           currentDM = "";
           client.RequestMemberList(client.currentServerId);
-          
+
           // Auto-select first text channel
-          auto& srv = client.servers[srvId];
-          for (auto& ch : srv.channels) {
-              if (ch.type == 0) { // Text
-                  client.currentChannelId = ch.id;
-                  srv.channelMessages[ch.id].clear();
-                  client.RequestServerHistory(srvId, ch.id);
-                  break;
-              }
+          auto &srv = client.servers[srvId];
+          for (auto &ch : srv.channels) {
+            if (ch.type == 0) { // Text
+              client.currentChannelId = ch.id;
+              srv.channelMessages[ch.id].clear();
+              client.RequestServerHistory(srvId, ch.id);
+              break;
+            }
           }
         }
         ImGui::PopStyleVar();
@@ -1830,24 +1949,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::SetTooltip("Create a Server");
 
       // Browse Servers Button at the bottom
-        ImGui::SetCursorPos(ImVec2(11, ImGui::GetWindowHeight() - 61));
-        if (showBrowseServers) {
-          ImGui::PushStyleColor(ImGuiCol_Button, config.accentColor);
-          ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 16.0f);
-        } else {
-          ImGui::PushStyleColor(ImGuiCol_Button,
-                                ImVec4(0.20f, 0.21f, 0.24f, 1.0f));
-          ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 24.0f);
-        }
-        if (ImGui::Button("##B", ImVec2(50, 50))) {
-          showBrowseServers = !showBrowseServers;
-          if (showBrowseServers)
-            client.SendListServers();
-        }
-        ImVec2 bCenter = ImVec2(ImGui::GetItemRectMin().x + 25, ImGui::GetItemRectMin().y + 25);
-        DrawBrowserIcon(bCenter, 24, IM_COL32_WHITE);
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor();
+      ImGui::SetCursorPos(ImVec2(11, ImGui::GetWindowHeight() - 61));
+      if (showBrowseServers) {
+        ImGui::PushStyleColor(ImGuiCol_Button, config.accentColor);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 16.0f);
+      } else {
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              ImVec4(0.20f, 0.21f, 0.24f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 24.0f);
+      }
+      if (ImGui::Button("##B", ImVec2(50, 50))) {
+        showBrowseServers = !showBrowseServers;
+        if (showBrowseServers)
+          client.SendListServers();
+      }
+      ImVec2 bCenter = ImVec2(ImGui::GetItemRectMin().x + 25,
+                              ImGui::GetItemRectMin().y + 25);
+      DrawBrowserIcon(bCenter, 24, IM_COL32_WHITE);
+      ImGui::PopStyleVar();
+      ImGui::PopStyleColor();
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Browse Servers");
 
@@ -1860,7 +1980,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
       ImGui::BeginChild("ChannelSidebar", ImVec2(240, 0), false);
 
       if (client.currentServerId == -1) {
-        auto drawSelectable = [&](const char *label, bool selected, ImVec2 size) {
+        auto drawSelectable = [&](const char *label, bool selected,
+                                  ImVec2 size) {
           ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
           ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 2));
           bool clicked = ImGui::Selectable(label, selected, 0, size);
@@ -1870,9 +1991,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
         ImGui::Dummy(ImVec2(0, 8));
         ImGui::SetCursorPosX(8);
-        if (drawSelectable("  Friends", currentDM == "friends_dashboard", ImVec2(224, 40))) {
-            currentDM = "friends_dashboard";
-            client.showVoiceCallWindow = false;
+        if (drawSelectable("  Friends", currentDM == "friends_dashboard",
+                           ImVec2(224, 40))) {
+          currentDM = "friends_dashboard";
+          client.showVoiceCallWindow = false;
         }
 
         ImGui::Dummy(ImVec2(0, 16));
@@ -1882,12 +2004,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::SameLine();
         ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 30);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.8f, 0.8f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.4f, 0.4f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                              ImVec4(0.4f, 0.4f, 1.0f, 1.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0,0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
         if (ImGui::Button("+##adddm", ImVec2(20, 20))) {
-            currentDM = "friends_dashboard";
-            friendsTab = 2;
+          currentDM = "friends_dashboard";
+          friendsTab = 2;
         }
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(2);
@@ -1896,12 +2019,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         std::lock_guard<std::mutex> dmLock(client.friendsMutex);
         for (auto &friend_ : client.friends) {
           // Only show friends who have DM history or unread
-          bool hasDM = client.dmChats.count(friend_.username) && !client.dmChats[friend_.username].messages.empty();
-          if (!hasDM && !friend_.hasUnread) continue;
+          bool hasDM = client.dmChats.count(friend_.username) &&
+                       !client.dmChats[friend_.username].messages.empty();
+          if (!hasDM && !friend_.hasUnread)
+            continue;
           ImVec4 color = friend_.hasUnread ? ImVec4(1.0f, 0.8f, 0.2f, 1.0f)
                                            : config.textColor;
           ImGui::PushStyleColor(ImGuiCol_Text, color);
-          std::string label = "  " + friend_.username + "##DM_" + friend_.username;
+          std::string label =
+              "  " + friend_.username + "##DM_" + friend_.username;
           if (drawSelectable(label.c_str(), currentDM == friend_.username,
                              ImVec2(208, 28))) {
             currentDM = friend_.username;
@@ -1917,10 +2043,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::Text("%s", server.serverName.c_str());
         ImGui::SameLine(205);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                              ImVec4(1, 1, 1, 0.1f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-                              ImVec4(1, 1, 1, 0.2f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.1f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.2f));
         if (ImGui::Button("##serveropt", ImVec2(28, 28)))
           showServerSettings = true;
         ImVec2 gearPos = ImGui::GetItemRectMin();
@@ -1931,22 +2055,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::Separator();
 
         // Categories
-        auto renderChannelCategory = [&](const std::string &title, const std::string& category) {
+        auto renderChannelCategory = [&](const std::string &title,
+                                         const std::string &category) {
           ImGui::Dummy(ImVec2(0, 8));
           ImGui::SetCursorPosX(16);
           ImGui::TextDisabled("%s", title.c_str());
-          
+
           for (int i = 0; i < (int)server.channels.size(); ++i) {
             auto &channel = server.channels[i];
-            if (channel.category != category && !(category == "Uncategorized" && channel.category.empty())) continue;
-            if (channel.type == 2) continue; // Category header
+            if (channel.category != category &&
+                !(category == "Uncategorized" && channel.category.empty()))
+              continue;
+            if (channel.type == 2)
+              continue; // Category header
 
             ImGui::SetCursorPosX(16);
             std::string label = (channel.type == 0 ? "# " : "v ") +
                                 channel.name + "##CH_" +
                                 std::to_string(channel.id);
-            if (ImGui::Selectable(label.c_str(), client.currentChannelId == channel.id,
-                                  0, ImVec2(0, 32))) {
+            if (ImGui::Selectable(label.c_str(),
+                                  client.currentChannelId == channel.id, 0,
+                                  ImVec2(0, 32))) {
               client.currentChannelId = channel.id;
               if (channel.type == 0) { // Text
                 server.channelMessages[channel.id].clear();
@@ -1963,16 +2092,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         };
 
         std::vector<std::string> cats;
-        for(auto& ch : server.channels) {
-            std::string catName = (ch.type == 2) ? ch.name : ch.category;
-            if (catName.empty()) catName = "Uncategorized";
-            bool found = false;
-            for(auto& c : cats) if(c == catName) { found = true; break; }
-            if(!found) cats.push_back(catName);
+        for (auto &ch : server.channels) {
+          std::string catName = (ch.type == 2) ? ch.name : ch.category;
+          if (catName.empty())
+            catName = "Uncategorized";
+          bool found = false;
+          for (auto &c : cats)
+            if (c == catName) {
+              found = true;
+              break;
+            }
+          if (!found)
+            cats.push_back(catName);
         }
 
-        for(auto& cat : cats) {
-            renderChannelCategory(cat, cat);
+        for (auto &cat : cats) {
+          renderChannelCategory(cat, cat);
         }
       }
 
@@ -1997,14 +2132,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
       ImGui::EndGroup();
       ImGui::SameLine(175);
       ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-      ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                            ImVec4(1, 1, 1, 0.1f));
-      ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-                            ImVec4(1, 1, 1, 0.2f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.1f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.2f));
       if (ImGui::Button("##settings", ImVec2(32, 32))) {
         showSettings = true;
-        strncpy_s(bioBuf, sizeof(bioBuf), client.myProfile.bio.c_str(), _TRUNCATE);
-        strncpy_s(pfpUrlBuf, sizeof(pfpUrlBuf), client.myProfile.pfp_url.c_str(), _TRUNCATE);
+        strncpy_s(bioBuf, sizeof(bioBuf), client.myProfile.bio.c_str(),
+                  _TRUNCATE);
+        strncpy_s(pfpUrlBuf, sizeof(pfpUrlBuf),
+                  client.myProfile.pfp_url.c_str(), _TRUNCATE);
         inputDevices = client.audio.GetInputDevices();
         outputDevices = client.audio.GetOutputDevices();
         // Pre-select current devices
@@ -2013,9 +2148,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         selectedInputDevice = 0;
         selectedOutputDevice = 0;
         for (int i = 0; i < (int)inputDevices.size(); i++)
-          if (inputDevices[i].name == curIn) { selectedInputDevice = i; break; }
+          if (inputDevices[i].name == curIn) {
+            selectedInputDevice = i;
+            break;
+          }
         for (int i = 0; i < (int)outputDevices.size(); i++)
-          if (outputDevices[i].name == curOut) { selectedOutputDevice = i; break; }
+          if (outputDevices[i].name == curOut) {
+            selectedOutputDevice = i;
+            break;
+          }
       }
       ImVec2 uGearPos = ImGui::GetItemRectMin();
       uGearPos.x += 16;
@@ -2037,129 +2178,146 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
           false);
 
       if (client.inVoice && client.showVoiceCallWindow) {
-          DrawCallView(client);
-      } else if (client.currentServerId == -1 && currentDM == "friends_dashboard") {
-          if (client.inVoice) {
-              ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.12f, 0.14f, 0.95f));
-              ImGui::SetCursorPos(ImVec2(10, 6));
-              ImGui::BeginChild("VoicePill", ImVec2(ImGui::GetContentRegionAvail().x - 20, 36), true, ImGuiWindowFlags_NoScrollbar);
-              ImGui::SetCursorPos(ImVec2(10, 8));
-              ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.f), "Voice Active: %s", client.currentVoiceServerId != -1 ? client.servers[client.currentVoiceServerId].serverName.c_str() : "Private Call");
-              ImGui::SameLine(ImGui::GetWindowWidth() - 110);
-              ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-              if (ImGui::Button("Open Call", ImVec2(100, 22))) client.showVoiceCallWindow = true;
-              ImGui::PopStyleVar();
-              ImGui::EndChild();
+        DrawCallView(client);
+      } else if (client.currentServerId == -1 &&
+                 currentDM == "friends_dashboard") {
+        if (client.inVoice) {
+          ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                                ImVec4(0.12f, 0.12f, 0.14f, 0.95f));
+          ImGui::SetCursorPos(ImVec2(10, 6));
+          ImGui::BeginChild("VoicePill",
+                            ImVec2(ImGui::GetContentRegionAvail().x - 20, 36),
+                            true, ImGuiWindowFlags_NoScrollbar);
+          ImGui::SetCursorPos(ImVec2(10, 8));
+          ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.f), "Voice Active: %s",
+                             client.currentVoiceServerId != -1
+                                 ? client.servers[client.currentVoiceServerId]
+                                       .serverName.c_str()
+                                 : "Private Call");
+          ImGui::SameLine(ImGui::GetWindowWidth() - 110);
+          ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+          if (ImGui::Button("Open Call", ImVec2(100, 22)))
+            client.showVoiceCallWindow = true;
+          ImGui::PopStyleVar();
+          ImGui::EndChild();
+          ImGui::PopStyleColor();
+          ImGui::Dummy(ImVec2(0, 4));
+        }
+        ImGui::BeginChild("FriendsDashboard", ImVec2(0, 0), false);
+
+        // Header Tabs
+        ImGui::Dummy(ImVec2(0, 10));
+        ImGui::SetCursorPosX(20);
+        ImGui::TextDisabled("FRIENDS");
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(100);
+
+        auto miniTab = [&](const char *lbl, int tab) {
+          bool active = friendsTab == tab;
+          if (active)
+            ImGui::PushStyleColor(ImGuiCol_Button, config.accentColor);
+          else
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+          ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 4));
+          if (ImGui::Button(lbl))
+            friendsTab = tab;
+          ImGui::PopStyleVar();
+          ImGui::PopStyleColor();
+          ImGui::SameLine();
+        };
+        miniTab("All", 0);
+        miniTab("Pending", 1);
+        miniTab("Add Friend", 2);
+        ImGui::NewLine();
+        ImGui::Separator();
+
+        ImGui::Dummy(ImVec2(0, 10));
+        std::lock_guard<std::mutex> lock(client.friendsMutex);
+
+        if (friendsTab == 0) {
+          for (auto &f : client.friends) {
+            ImGui::SetCursorPosX(20);
+            DrawAvatar(f.username, "", 32);
+            ImGui::SameLine(60);
+            ImGui::Text("%s", f.username.c_str());
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 120);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+            if (ImGui::Button(("Message##dm_" + f.username).c_str())) {
+              currentDM = f.username;
+              f.hasUnread = false;
+            }
+            ImGui::PopStyleColor();
+            if (ImGui::BeginPopupContextItem(("ctx_" + f.username).c_str())) {
+              if (ImGui::MenuItem("View Profile"))
+                client.RequestProfile(f.username);
+              ImGui::Separator();
+              ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.3f, 0.3f, 1));
+              if (ImGui::MenuItem("Unfriend")) {
+                client.SendUnfriend(f.username);
+                if (currentDM == f.username)
+                  currentDM = "";
+                client.RequestFriendList();
+              }
               ImGui::PopStyleColor();
-              ImGui::Dummy(ImVec2(0, 4));
+              ImGui::EndPopup();
+            }
+            ImGui::Separator();
           }
-          ImGui::BeginChild("FriendsDashboard", ImVec2(0, 0), false);
-          
-          // Header Tabs
+          if (client.friends.empty()) {
+            ImGui::SetCursorPosX(20);
+            ImGui::TextDisabled("No friends yet");
+          }
+        } else if (friendsTab == 1) {
+          for (auto &req : client.friendRequests) {
+            ImGui::SetCursorPosX(20);
+            ImGui::Text("%s", req.c_str());
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 160);
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                  ImVec4(0.18f, 0.49f, 0.20f, 1.0f));
+            if (ImGui::Button(("Accept##" + req).c_str()))
+              client.RespondFriendRequest(req, true);
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                  ImVec4(0.6f, 0.15f, 0.15f, 1.0f));
+            if (ImGui::Button(("Decline##" + req).c_str()))
+              client.RespondFriendRequest(req, false);
+            ImGui::PopStyleColor();
+            ImGui::Separator();
+          }
+          if (client.friendRequests.empty()) {
+            ImGui::SetCursorPosX(20);
+            ImGui::TextDisabled("No pending requests");
+          }
+        } else if (friendsTab == 2) {
+          ImGui::SetCursorPosX(20);
+          ImGui::Text("Add Friend");
+          ImGui::SetCursorPosX(20);
+          ImGui::TextDisabled("You can add friends with their username.");
           ImGui::Dummy(ImVec2(0, 10));
           ImGui::SetCursorPosX(20);
-          ImGui::TextDisabled("FRIENDS");
+          ImGui::PushItemWidth(400);
+          ImGui::InputText("##addtag", addFriendBuf, 64);
+          ImGui::PopItemWidth();
           ImGui::SameLine();
-          ImGui::SetCursorPosX(100);
-          
-          auto miniTab = [&](const char *lbl, int tab) {
-            bool active = friendsTab == tab;
-            if (active) ImGui::PushStyleColor(ImGuiCol_Button, config.accentColor);
-            else ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 4));
-            if (ImGui::Button(lbl)) friendsTab = tab;
-            ImGui::PopStyleVar();
-            ImGui::PopStyleColor();
-            ImGui::SameLine();
-          };
-          miniTab("All", 0);
-          miniTab("Pending", 1);
-          miniTab("Add Friend", 2);
-          ImGui::NewLine();
-          ImGui::Separator();
-          
-          ImGui::Dummy(ImVec2(0, 10));
-          std::lock_guard<std::mutex> lock(client.friendsMutex);
-          
-          if (friendsTab == 0) {
-            for (auto &f : client.friends) {
-              ImGui::SetCursorPosX(20);
-              DrawAvatar(f.username, "", 32);
-              ImGui::SameLine(60);
-              ImGui::Text("%s", f.username.c_str());
-              ImGui::SameLine(ImGui::GetContentRegionAvail().x - 120);
-              ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-              if (ImGui::Button(("Message##dm_" + f.username).c_str())) {
-                currentDM = f.username;
-                f.hasUnread = false;
-              }
-              ImGui::PopStyleColor();
-              if (ImGui::BeginPopupContextItem(("ctx_" + f.username).c_str())) {
-                if (ImGui::MenuItem("View Profile")) client.RequestProfile(f.username);
-                ImGui::Separator();
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.3f, 0.3f, 1));
-                if (ImGui::MenuItem("Unfriend")) {
-                  client.SendUnfriend(f.username);
-                  if (currentDM == f.username) currentDM = "";
-                  client.RequestFriendList();
-                }
-                ImGui::PopStyleColor();
-                ImGui::EndPopup();
-              }
-              ImGui::Separator();
+          ImGui::PushStyleColor(ImGuiCol_Button, config.accentColor);
+          if (ImGui::Button("Send Friend Request")) {
+            if (strlen(addFriendBuf) > 0) {
+              client.SendFriendRequest(addFriendBuf);
+              addFriendBuf[0] = '\0';
             }
-            if (client.friends.empty()) {
-              ImGui::SetCursorPosX(20);
-              ImGui::TextDisabled("No friends yet");
-            }
-          } else if (friendsTab == 1) {
-            for (auto &req : client.friendRequests) {
-              ImGui::SetCursorPosX(20);
-              ImGui::Text("%s", req.c_str());
-              ImGui::SameLine(ImGui::GetContentRegionAvail().x - 160);
-              ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.49f, 0.20f, 1.0f));
-              if (ImGui::Button(("Accept##" + req).c_str()))
-                client.RespondFriendRequest(req, true);
-              ImGui::PopStyleColor();
-              ImGui::SameLine();
-              ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.15f, 0.15f, 1.0f));
-              if (ImGui::Button(("Decline##" + req).c_str()))
-                client.RespondFriendRequest(req, false);
-              ImGui::PopStyleColor();
-              ImGui::Separator();
-            }
-            if (client.friendRequests.empty()) {
-              ImGui::SetCursorPosX(20);
-              ImGui::TextDisabled("No pending requests");
-            }
-          } else if (friendsTab == 2) {
-            ImGui::SetCursorPosX(20);
-            ImGui::Text("Add Friend");
-            ImGui::SetCursorPosX(20);
-            ImGui::TextDisabled("You can add friends with their username.");
-            ImGui::Dummy(ImVec2(0, 10));
-            ImGui::SetCursorPosX(20);
-            ImGui::PushItemWidth(400);
-            ImGui::InputText("##addtag", addFriendBuf, 64);
-            ImGui::PopItemWidth();
-            ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Button, config.accentColor);
-            if (ImGui::Button("Send Friend Request")) {
-              if (strlen(addFriendBuf) > 0) {
-                client.SendFriendRequest(addFriendBuf);
-                addFriendBuf[0] = '\0';
-              }
-            }
-            ImGui::PopStyleColor();
           }
-          ImGui::EndChild();
+          ImGui::PopStyleColor();
+        }
+        ImGui::EndChild();
       } else if (client.currentServerId == -1 && currentDM.empty()) {
         // Empty state - no DM selected
         float cx = ImGui::GetContentRegionAvail().x * 0.5f;
         float cy = ImGui::GetContentRegionAvail().y * 0.4f;
         ImGui::SetCursorPos(ImVec2(cx - 100, cy));
         ImGui::TextDisabled("Select a friend to start chatting");
-      } else if (client.currentServerId != -1 && client.currentChannelId != -1) {
+      } else if (client.currentServerId != -1 &&
+                 client.currentChannelId != -1) {
         auto &server = client.servers[client.currentServerId];
         std::string channelName = "Unknown";
         int channelType = 0;
@@ -2175,18 +2333,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::Separator();
 
         if (client.inVoice && !client.showVoiceCallWindow) {
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.12f, 0.14f, 0.95f));
-            ImGui::SetCursorPos(ImVec2(10, 40));
-            ImGui::BeginChild("VoicePill", ImVec2(ImGui::GetContentRegionAvail().x - 20, 42), true, ImGuiWindowFlags_NoScrollbar);
-            ImGui::SetCursorPos(ImVec2(10, 11));
-            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.f), "Voice Active: %s", client.currentVoiceServerId != -1 ? client.servers[client.currentVoiceServerId].serverName.c_str() : "Private Call");
-            ImGui::SameLine(ImGui::GetWindowWidth() - 110);
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-            if (ImGui::Button("Open Call", ImVec2(100, 26))) client.showVoiceCallWindow = true;
-            ImGui::PopStyleVar();
-            ImGui::EndChild();
-            ImGui::PopStyleColor();
-            ImGui::Dummy(ImVec2(0, 4));
+          ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                                ImVec4(0.12f, 0.12f, 0.14f, 0.95f));
+          ImGui::SetCursorPos(ImVec2(10, 40));
+          ImGui::BeginChild("VoicePill",
+                            ImVec2(ImGui::GetContentRegionAvail().x - 20, 42),
+                            true, ImGuiWindowFlags_NoScrollbar);
+          ImGui::SetCursorPos(ImVec2(10, 11));
+          ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.f), "Voice Active: %s",
+                             client.currentVoiceServerId != -1
+                                 ? client.servers[client.currentVoiceServerId]
+                                       .serverName.c_str()
+                                 : "Private Call");
+          ImGui::SameLine(ImGui::GetWindowWidth() - 110);
+          ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+          if (ImGui::Button("Open Call", ImVec2(100, 26)))
+            client.showVoiceCallWindow = true;
+          ImGui::PopStyleVar();
+          ImGui::EndChild();
+          ImGui::PopStyleColor();
+          ImGui::Dummy(ImVec2(0, 4));
         }
 
         if (channelType == 0) { // Text Channel
@@ -2196,27 +2362,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
           for (auto &m : messages) {
             ImGui::BeginGroup();
             ImGui::SetCursorPosX(16);
-            
+
             std::string user = m.sender;
             std::string content = m.content;
             std::string timeStr = "Today";
 
             // Parse out "[HH:MM] [username] " if present
             if (content.size() > 7 && content[0] == '[' && content[6] == ']') {
-                timeStr = content.substr(1, 5);
-                size_t secondClose = content.find(']', 7);
-                if (secondClose != std::string::npos) {
-                    content = content.substr(secondClose + 2);
-                }
+              timeStr = content.substr(1, 5);
+              size_t secondClose = content.find(']', 7);
+              if (secondClose != std::string::npos) {
+                content = content.substr(secondClose + 2);
+              }
             }
-            
+
             std::string pfp = "";
             if (client.userProfileCache.count(user)) {
-                pfp = client.userProfileCache[user].pfp_url;
+              pfp = client.userProfileCache[user].pfp_url;
             } else {
-                for(auto& mi : client.serverMembers[client.currentServerId]) {
-                  if(mi.username == user) { pfp = mi.pfp_url; break; }
+              for (auto &mi : client.serverMembers[client.currentServerId]) {
+                if (mi.username == user) {
+                  pfp = mi.pfp_url;
+                  break;
                 }
+              }
             }
 
             DrawAvatar(user, pfp, 40);
@@ -2228,7 +2397,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             ImGui::TextWrapped("%s", content.c_str());
             ImGui::EndGroup();
             if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
-                client.RequestProfile(user);
+              client.RequestProfile(user);
             }
             ImGui::EndGroup();
             ImGui::Dummy(ImVec2(0, 12));
@@ -2241,8 +2410,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
           ImGui::PushItemWidth(-16);
           if (ImGui::InputText("##channelinput", inputBuf, 256,
                                ImGuiInputTextFlags_EnterReturnsTrue)) {
-            client.SendServerMessage(client.currentServerId, client.currentChannelId,
-                                     inputBuf);
+            client.SendServerMessage(client.currentServerId,
+                                     client.currentChannelId, inputBuf);
             inputBuf[0] = '\0';
             ImGui::SetKeyboardFocusHere(-1);
           }
@@ -2255,7 +2424,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             ImGui::TextColored(ImVec4(0, 1, 0, 1), "Voice Connected");
           } else {
             if (ImGui::Button("Join Voice", ImVec2(150, 40)))
-              client.SendJoinVoice(client.currentServerId, client.currentChannelId);
+              client.SendJoinVoice(client.currentServerId,
+                                   client.currentChannelId);
           }
         }
       } else if (client.currentServerId == -1 && !currentDM.empty()) {
@@ -2264,18 +2434,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::Separator();
 
         if (client.inVoice && !client.showVoiceCallWindow) {
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.12f, 0.14f, 0.95f));
-            ImGui::SetCursorPos(ImVec2(10, 40));
-            ImGui::BeginChild("VoicePill", ImVec2(ImGui::GetContentRegionAvail().x - 20, 42), true, ImGuiWindowFlags_NoScrollbar);
-            ImGui::SetCursorPos(ImVec2(10, 11));
-            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.f), "Voice Active: %s", client.currentVoiceServerId != -1 ? client.servers[client.currentVoiceServerId].serverName.c_str() : "Private Call");
-            ImGui::SameLine(ImGui::GetWindowWidth() - 110);
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-            if (ImGui::Button("Open Call", ImVec2(100, 26))) client.showVoiceCallWindow = true;
-            ImGui::PopStyleVar();
-            ImGui::EndChild();
-            ImGui::PopStyleColor();
-            ImGui::Dummy(ImVec2(0, 4));
+          ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                                ImVec4(0.12f, 0.12f, 0.14f, 0.95f));
+          ImGui::SetCursorPos(ImVec2(10, 40));
+          ImGui::BeginChild("VoicePill",
+                            ImVec2(ImGui::GetContentRegionAvail().x - 20, 42),
+                            true, ImGuiWindowFlags_NoScrollbar);
+          ImGui::SetCursorPos(ImVec2(10, 11));
+          ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.f), "Voice Active: %s",
+                             client.currentVoiceServerId != -1
+                                 ? client.servers[client.currentVoiceServerId]
+                                       .serverName.c_str()
+                                 : "Private Call");
+          ImGui::SameLine(ImGui::GetWindowWidth() - 110);
+          ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+          if (ImGui::Button("Open Call", ImVec2(100, 26)))
+            client.showVoiceCallWindow = true;
+          ImGui::PopStyleVar();
+          ImGui::EndChild();
+          ImGui::PopStyleColor();
+          ImGui::Dummy(ImVec2(0, 4));
         }
 
         float chatHeight = ImGui::GetContentRegionAvail().y - 60;
@@ -2312,17 +2490,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::PopItemWidth();
       } else {
         if (client.inVoice && !client.showVoiceCallWindow) {
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.12f, 0.14f, 0.95f));
-            ImGui::SetCursorPos(ImVec2(10, 10));
-            ImGui::BeginChild("VoicePill", ImVec2(ImGui::GetContentRegionAvail().x - 20, 42), true, ImGuiWindowFlags_NoScrollbar);
-            ImGui::SetCursorPos(ImVec2(10, 11));
-            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.f), "Voice Active: %s", client.currentVoiceServerId != -1 ? client.servers[client.currentVoiceServerId].serverName.c_str() : "Private Call");
-            ImGui::SameLine(ImGui::GetWindowWidth() - 110);
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-            if (ImGui::Button("Open Call", ImVec2(100, 26))) client.showVoiceCallWindow = true;
-            ImGui::PopStyleVar();
-            ImGui::EndChild();
-            ImGui::PopStyleColor();
+          ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                                ImVec4(0.12f, 0.12f, 0.14f, 0.95f));
+          ImGui::SetCursorPos(ImVec2(10, 10));
+          ImGui::BeginChild("VoicePill",
+                            ImVec2(ImGui::GetContentRegionAvail().x - 20, 42),
+                            true, ImGuiWindowFlags_NoScrollbar);
+          ImGui::SetCursorPos(ImVec2(10, 11));
+          ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.f), "Voice Active: %s",
+                             client.currentVoiceServerId != -1
+                                 ? client.servers[client.currentVoiceServerId]
+                                       .serverName.c_str()
+                                 : "Private Call");
+          ImGui::SameLine(ImGui::GetWindowWidth() - 110);
+          ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+          if (ImGui::Button("Open Call", ImVec2(100, 26)))
+            client.showVoiceCallWindow = true;
+          ImGui::PopStyleVar();
+          ImGui::EndChild();
+          ImGui::PopStyleColor();
         }
       }
 
@@ -2334,14 +2520,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::PushStyleColor(ImGuiCol_ChildBg, config.channelListColor);
         ImGui::BeginChild("MemberSidebar", ImVec2(240, 0), false);
         ImGui::SetCursorPos(ImVec2(16, 16));
-        ImGui::TextDisabled("MEMBERS - %d",
-                            (int)client.serverMembers[client.currentServerId].size());
+        ImGui::TextDisabled(
+            "MEMBERS - %d",
+            (int)client.serverMembers[client.currentServerId].size());
         ImGui::Separator();
         auto &members = client.serverMembers[client.currentServerId];
         for (auto &m : members) {
           ImGui::SetCursorPosX(16);
           std::string selId = "##msel_" + m.username;
-          bool clicked = ImGui::Selectable(selId.c_str(), false, 0, ImVec2(0, 40));
+          bool clicked =
+              ImGui::Selectable(selId.c_str(), false, 0, ImVec2(0, 40));
           ImGui::SameLine(16);
           DrawAvatar(m.username, m.pfp_url, 32);
           ImGui::SameLine(56);
@@ -2361,7 +2549,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
       ImGui::End();
 
-
       // Popups & Modals
       ImVec2 center = ImGui::GetMainViewport()->GetCenter();
 
@@ -2371,20 +2558,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::SetNextWindowSize(io2.DisplaySize);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        if (ImGui::Begin("Settings##win", nullptr,
-                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
-                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
+        if (ImGui::Begin(
+                "Settings##win", nullptr,
+                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
           // Top bar with close button
           ImGui::SetCursorPos(ImVec2(0, 0));
-          ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.09f, 0.10f, 1.0f));
-          ImGui::BeginChild("SettingsTopBar", ImVec2(0, 48), false, ImGuiWindowFlags_NoScrollbar);
+          ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                                ImVec4(0.08f, 0.09f, 0.10f, 1.0f));
+          ImGui::BeginChild("SettingsTopBar", ImVec2(0, 48), false,
+                            ImGuiWindowFlags_NoScrollbar);
           ImGui::SetCursorPos(ImVec2(io2.DisplaySize.x - 110, 10));
-          ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.15f, 0.15f, 1.0f));
-          if (ImGui::Button("  ESC  Close", ImVec2(100, 28))) showSettings = false;
+          ImGui::PushStyleColor(ImGuiCol_Button,
+                                ImVec4(0.5f, 0.15f, 0.15f, 1.0f));
+          if (ImGui::Button("  ESC  Close", ImVec2(100, 28)))
+            showSettings = false;
           ImGui::PopStyleColor();
           ImGui::EndChild();
           ImGui::PopStyleColor();
-          if (ImGui::IsKeyPressed(ImGuiKey_Escape)) showSettings = false;
+          if (ImGui::IsKeyPressed(ImGuiKey_Escape))
+            showSettings = false;
 
           // Two-column layout
           ImGui::PushStyleColor(ImGuiCol_ChildBg, config.channelListColor);
@@ -2426,8 +2619,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
               ClearCredentials();
 
             ImGui::SetCursorPos(ImVec2(30, 520));
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                  ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                  ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
             if (ImGui::Button("Logout", ImVec2(120, 35))) {
               ClearCredentials();
@@ -2450,10 +2645,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             ImGui::PopItemWidth();
             ImGui::SameLine();
             if (ImGui::Button("Browse...")) {
-                std::string path = PickLocalFile();
-                if (!path.empty()) {
-                    strncpy_s(pfpUrlBuf, 512, path.c_str(), _TRUNCATE);
-                }
+              std::string path = PickLocalFile();
+              if (!path.empty()) {
+                strncpy_s(pfpUrlBuf, 512, path.c_str(), _TRUNCATE);
+              }
             }
             ImGui::Dummy(ImVec2(0, 20));
             if (ImGui::Button("Save Profile", ImVec2(120, 40))) {
@@ -2467,26 +2662,42 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             ImGui::Dummy(ImVec2(0, 10));
             ImGui::Text("Input Device");
             ImGui::PushItemWidth(400);
-            if (ImGui::BeginCombo("##inputdev",
-                    inputDevices.empty() ? "No devices" : inputDevices[selectedInputDevice].name.c_str())) {
+            if (ImGui::BeginCombo(
+                    "##inputdev",
+                    inputDevices.empty()
+                        ? "No devices"
+                        : inputDevices[selectedInputDevice].name.c_str())) {
               for (int i = 0; i < (int)inputDevices.size(); ++i) {
-                if (ImGui::Selectable(inputDevices[i].name.c_str(), selectedInputDevice == i)) {
+                if (ImGui::Selectable(inputDevices[i].name.c_str(),
+                                      selectedInputDevice == i)) {
                   selectedInputDevice = i;
-                  client.audio.SetDevices(inputDevices[selectedInputDevice].name, outputDevices[selectedOutputDevice].name);
-                  SaveConfig(client.username, client.sessionToken, inputDevices[selectedInputDevice].name, outputDevices[selectedOutputDevice].name);
+                  client.audio.SetDevices(
+                      inputDevices[selectedInputDevice].name,
+                      outputDevices[selectedOutputDevice].name);
+                  SaveConfig(client.username, client.sessionToken,
+                             inputDevices[selectedInputDevice].name,
+                             outputDevices[selectedOutputDevice].name);
                 }
               }
               ImGui::EndCombo();
             }
             ImGui::Dummy(ImVec2(0, 10));
             ImGui::Text("Output Device");
-            if (ImGui::BeginCombo("##outputdev",
-                    outputDevices.empty() ? "No devices" : outputDevices[selectedOutputDevice].name.c_str())) {
+            if (ImGui::BeginCombo(
+                    "##outputdev",
+                    outputDevices.empty()
+                        ? "No devices"
+                        : outputDevices[selectedOutputDevice].name.c_str())) {
               for (int i = 0; i < (int)outputDevices.size(); ++i) {
-                if (ImGui::Selectable(outputDevices[i].name.c_str(), selectedOutputDevice == i)) {
+                if (ImGui::Selectable(outputDevices[i].name.c_str(),
+                                      selectedOutputDevice == i)) {
                   selectedOutputDevice = i;
-                  client.audio.SetDevices(inputDevices[selectedInputDevice].name, outputDevices[selectedOutputDevice].name);
-                  SaveConfig(client.username, client.sessionToken, inputDevices[selectedInputDevice].name, outputDevices[selectedOutputDevice].name);
+                  client.audio.SetDevices(
+                      inputDevices[selectedInputDevice].name,
+                      outputDevices[selectedOutputDevice].name);
+                  SaveConfig(client.username, client.sessionToken,
+                             inputDevices[selectedInputDevice].name,
+                             outputDevices[selectedOutputDevice].name);
                 }
               }
               ImGui::EndCombo();
@@ -2507,20 +2718,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::SetNextWindowSize(io2.DisplaySize);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        if (ImGui::Begin("Server Settings##win", nullptr,
-                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
-                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
+        if (ImGui::Begin(
+                "Server Settings##win", nullptr,
+                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
           // Top bar
           ImGui::SetCursorPos(ImVec2(0, 0));
-          ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.09f, 0.10f, 1.0f));
-          ImGui::BeginChild("SrvSettTopBar", ImVec2(0, 48), false, ImGuiWindowFlags_NoScrollbar);
+          ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                                ImVec4(0.08f, 0.09f, 0.10f, 1.0f));
+          ImGui::BeginChild("SrvSettTopBar", ImVec2(0, 48), false,
+                            ImGuiWindowFlags_NoScrollbar);
           ImGui::SetCursorPos(ImVec2(io2.DisplaySize.x - 110, 10));
-          ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.15f, 0.15f, 1.0f));
-          if (ImGui::Button("  ESC  Close##srv", ImVec2(100, 28))) { showServerSettings = false; client.lastServerOpStatus = ""; }
+          ImGui::PushStyleColor(ImGuiCol_Button,
+                                ImVec4(0.5f, 0.15f, 0.15f, 1.0f));
+          if (ImGui::Button("  ESC  Close##srv", ImVec2(100, 28))) {
+            showServerSettings = false;
+            client.lastServerOpStatus = "";
+          }
           ImGui::PopStyleColor();
           ImGui::EndChild();
           ImGui::PopStyleColor();
-          if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { showServerSettings = false; client.lastServerOpStatus = ""; }
+          if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            showServerSettings = false;
+            client.lastServerOpStatus = "";
+          }
 
           ImGui::BeginChild("SrvSettSidebar", ImVec2(220, 0), true);
           auto srvSelect = [&](const char *label, int tab) {
@@ -2558,8 +2779,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
               client.SendRenameServer(client.currentServerId, srvNameEdit);
             }
             if (!client.lastServerOpStatus.empty()) {
-                ImGui::Dummy(ImVec2(0, 10));
-                ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "%s", client.lastServerOpStatus.c_str());
+              ImGui::Dummy(ImVec2(0, 10));
+              ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "%s",
+                                 client.lastServerOpStatus.c_str());
             }
           } else if (serverSettingsTab == 1) {
             static bool showInlineChannelForm = false;
@@ -2572,11 +2794,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             ImGui::Separator();
             std::vector<std::string> catOpts = {"(None)"};
             for (auto &ch : server.channels) {
-                if (ch.type == 2) {
-                    bool dup = false;
-                    for (auto &x : catOpts) if (x == ch.name) { dup = true; break; }
-                    if (!dup) catOpts.push_back(ch.name);
-                }
+              if (ch.type == 2) {
+                bool dup = false;
+                for (auto &x : catOpts)
+                  if (x == ch.name) {
+                    dup = true;
+                    break;
+                  }
+                if (!dup)
+                  catOpts.push_back(ch.name);
+              }
             }
             ImGui::Dummy(ImVec2(0, 10));
             if (ImGui::Button("+ Create Channel", ImVec2(170, 35))) {
@@ -2595,11 +2822,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
             if (showInlineChannelForm) {
               ImGui::Dummy(ImVec2(0, 8));
-              ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.13f, 0.15f, 1.0f));
-              ImGui::BeginChild("InlineForm", ImVec2(0, inlineFormIsCategory ? 110 : 180), true);
+              ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                                    ImVec4(0.12f, 0.13f, 0.15f, 1.0f));
+              ImGui::BeginChild("InlineForm",
+                                ImVec2(0, inlineFormIsCategory ? 110 : 180),
+                                true);
               ImGui::Dummy(ImVec2(0, 6));
               ImGui::SetCursorPosX(12);
-              ImGui::Text(inlineFormIsCategory ? "Category Name" : "Channel Name");
+              ImGui::Text(inlineFormIsCategory ? "Category Name"
+                                               : "Channel Name");
               ImGui::SetCursorPosX(12);
               ImGui::PushItemWidth(440);
               ImGui::InputText("##ilname", inlineChName, 64);
@@ -2614,15 +2845,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 ImGui::Combo("##iltype", &inlineChType, "Text\0Voice\0");
                 ImGui::PopItemWidth();
 
-                if (inlineChCatIdx >= (int)catOpts.size()) inlineChCatIdx = 0;
+                if (inlineChCatIdx >= (int)catOpts.size())
+                  inlineChCatIdx = 0;
                 ImGui::Dummy(ImVec2(0, 4));
                 ImGui::SetCursorPosX(12);
                 ImGui::Text("Category");
                 ImGui::SetCursorPosX(12);
                 ImGui::PushItemWidth(440);
-                if (ImGui::BeginCombo("##ilcat", catOpts[inlineChCatIdx].c_str())) {
+                if (ImGui::BeginCombo("##ilcat",
+                                      catOpts[inlineChCatIdx].c_str())) {
                   for (int i = 0; i < (int)catOpts.size(); i++)
-                    if (ImGui::Selectable(catOpts[i].c_str(), inlineChCatIdx == i))
+                    if (ImGui::Selectable(catOpts[i].c_str(),
+                                          inlineChCatIdx == i))
                       inlineChCatIdx = i;
                   ImGui::EndCombo();
                 }
@@ -2635,19 +2869,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 client.lastServerOpStatus = "Sending request...";
                 if (strlen(inlineChName) > 0) {
                   if (inlineFormIsCategory) {
-                    client.SendCreateChannel(client.currentServerId, inlineChName, 2, inlineChName);
+                    client.SendCreateChannel(client.currentServerId,
+                                             inlineChName, 2, inlineChName);
                   } else {
                     std::vector<std::string> catOpts2 = {"(None)"};
                     for (auto &ch : server.channels) {
                       std::string c = (ch.type == 2) ? ch.name : ch.category;
                       if (!c.empty()) {
                         bool dup = false;
-                        for (auto &x : catOpts2) if (x == c) { dup = true; break; }
-                        if (!dup) catOpts2.push_back(c);
+                        for (auto &x : catOpts2)
+                          if (x == c) {
+                            dup = true;
+                            break;
+                          }
+                        if (!dup)
+                          catOpts2.push_back(c);
                       }
                     }
-                    std::string cat = (inlineChCatIdx == 0) ? "" : catOpts2[inlineChCatIdx];
-                    client.SendCreateChannel(client.currentServerId, inlineChName, inlineChType, cat);
+                    std::string cat =
+                        (inlineChCatIdx == 0) ? "" : catOpts2[inlineChCatIdx];
+                    client.SendCreateChannel(client.currentServerId,
+                                             inlineChName, inlineChType, cat);
                   }
                   inlineChName[0] = '\0';
                   showInlineChannelForm = false;
@@ -2668,12 +2910,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
               ImGui::Text("%s", ch.name.c_str());
               ImGui::SameLine(300);
               if (ImGui::Button(("Edit##" + std::to_string(ch.id)).c_str())) {
-                  showInlineChannelForm = true;
-                  inlineFormIsCategory = false;
-                  strcpy_s(inlineChName, ch.name.c_str());
-                  inlineChType = ch.type;
-                  // Set category if it belongs to one
-                  for(int idx=0; idx < (int)catOpts.size(); idx++) if(catOpts[idx] == ch.category) inlineChCatIdx = idx;
+                showInlineChannelForm = true;
+                inlineFormIsCategory = false;
+                strcpy_s(inlineChName, ch.name.c_str());
+                inlineChType = ch.type;
+                // Set category if it belongs to one
+                for (int idx = 0; idx < (int)catOpts.size(); idx++)
+                  if (catOpts[idx] == ch.category)
+                    inlineChCatIdx = idx;
               }
               ImGui::SameLine();
               if (ImGui::Button(("Delete##" + std::to_string(ch.id)).c_str())) {
@@ -2700,8 +2944,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
           ImGui::Dummy(ImVec2(0, 40));
           ImGui::Separator();
           ImGui::Dummy(ImVec2(0, 10));
-          if (ImGui::IsKeyPressed(ImGuiKey_Escape)) showServerSettings = false;
-          ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7f, 0.2f, 0.2f, 1.0f));
+          if (ImGui::IsKeyPressed(ImGuiKey_Escape))
+            showServerSettings = false;
+          ImGui::PushStyleColor(ImGuiCol_Button,
+                                ImVec4(0.7f, 0.2f, 0.2f, 1.0f));
           if (ImGui::Button("Leave Server", ImVec2(200, 35))) {
             ImGui::OpenPopup("Confirm Leave");
           }
@@ -2714,7 +2960,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
               ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Cancel", ImVec2(100, 30))) ImGui::CloseCurrentPopup();
+            if (ImGui::Button("Cancel", ImVec2(100, 30)))
+              ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
           }
           ImGui::PopStyleColor();
@@ -2817,7 +3064,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
       }
 
       if (client.showProfileModal) {
-          DrawProfileModal(client, client.selectedProfile, &client.showProfileModal);
+        DrawProfileModal(client, client.selectedProfile,
+                         &client.showProfileModal);
       }
 
       if (showBrowseServers)
@@ -2839,18 +3087,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
           ImGui::SetCursorPosX(20);
           ImGui::Text("%s", sname.c_str());
           if (hasPass) {
-              ImGui::SameLine();
-              ImGui::TextDisabled("(Locked)");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(Locked)");
           }
           ImGui::SameLine(400);
           if (ImGui::Button(("Join##" + std::to_string(sid)).c_str())) {
-              if (hasPass) {
-                  client.targetServerToJoin = sid;
-                  client.showPasswordModal = true;
-                  client.serverPassBuf[0] = '\0';
-              } else {
-                  client.SendJoinServer(sid);
-              }
+            if (hasPass) {
+              client.targetServerToJoin = sid;
+              client.showPasswordModal = true;
+              client.serverPassBuf[0] = '\0';
+            } else {
+              client.SendJoinServer(sid);
+            }
           }
           ImGui::Separator();
         }
@@ -2881,12 +3129,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             std::string cat = (ch.type == 2) ? ch.name : ch.category;
             if (!cat.empty()) {
               bool found = false;
-              for (auto &c : catOptions) if (c == cat) { found = true; break; }
-              if (!found) catOptions.push_back(cat);
+              for (auto &c : catOptions)
+                if (c == cat) {
+                  found = true;
+                  break;
+                }
+              if (!found)
+                catOptions.push_back(cat);
             }
           }
         }
-        if (selectedCatIdx >= (int)catOptions.size()) selectedCatIdx = 0;
+        if (selectedCatIdx >= (int)catOptions.size())
+          selectedCatIdx = 0;
 
         ImGui::Dummy(ImVec2(0, 10));
         ImGui::SetCursorPosX(20);
@@ -2921,7 +3175,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::Dummy(ImVec2(0, 15));
         ImGui::SetCursorPosX(20);
         if (ImGui::Button("Create", ImVec2(120, 35))) {
-          std::string cat = (selectedCatIdx == 0) ? "" : catOptions[selectedCatIdx];
+          std::string cat =
+              (selectedCatIdx == 0) ? "" : catOptions[selectedCatIdx];
           client.SendCreateChannel(client.currentServerId, chName, chType, cat);
           showCreateChannel = false;
           chName[0] = '\0';
@@ -2955,7 +3210,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::SetCursorPosX(20);
         if (ImGui::Button("Create", ImVec2(120, 35))) {
           if (strlen(catName) > 0) {
-            client.SendCreateChannel(client.currentServerId, catName, 2, catName);
+            client.SendCreateChannel(client.currentServerId, catName, 2,
+                                     catName);
           }
           showCreateCategory = false;
           catName[0] = '\0';
@@ -3009,26 +3265,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
       }
     }
 
-      if (client.showPasswordModal) {
-          ImGui::OpenPopup("Enter Password");
-          client.showPasswordModal = false;
-      }
+    if (client.showPasswordModal) {
+      ImGui::OpenPopup("Enter Password");
+      client.showPasswordModal = false;
+    }
 
-      if (ImGui::BeginPopupModal("Enter Password", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-          ImGui::Text("This server is password protected.");
-          ImGui::InputText("Password", client.serverPassBuf, 64, ImGuiInputTextFlags_Password);
-          if (ImGui::Button("Join", ImVec2(120, 0))) {
-              client.SendJoinServer(client.targetServerToJoin, client.serverPassBuf);
-              ImGui::CloseCurrentPopup();
-              showBrowseServers = false;
-          }
-          ImGui::SameLine();
-          if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-              ImGui::CloseCurrentPopup();
-          }
-          ImGui::EndPopup();
+    if (ImGui::BeginPopupModal("Enter Password", NULL,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::Text("This server is password protected.");
+      ImGui::InputText("Password", client.serverPassBuf, 64,
+                       ImGuiInputTextFlags_Password);
+      if (ImGui::Button("Join", ImVec2(120, 0))) {
+        client.SendJoinServer(client.targetServerToJoin, client.serverPassBuf);
+        ImGui::CloseCurrentPopup();
+        showBrowseServers = false;
       }
-
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
 
     ImGui::Render();
     const float clear_color[4] = {config.bgColor.x, config.bgColor.y,
@@ -3123,16 +3380,18 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return true;
   switch (msg) {
   case WM_NCCALCSIZE:
-      return 0;
+    return 0;
   case WM_NCHITTEST: {
-      LRESULT hit = DefWindowProc(hWnd, msg, wParam, lParam);
-      if (hit == HTCLIENT) {
-          POINT pt = { LOWORD(lParam), HIWORD(lParam) };
-          ScreenToClient(hWnd, &pt);
-          RECT rc; GetClientRect(hWnd, &rc);
-          if (pt.y < 32 && pt.x < (rc.right - 140)) return HTCAPTION;
-      }
-      return hit;
+    LRESULT hit = DefWindowProc(hWnd, msg, wParam, lParam);
+    if (hit == HTCLIENT) {
+      POINT pt = {LOWORD(lParam), HIWORD(lParam)};
+      ScreenToClient(hWnd, &pt);
+      RECT rc;
+      GetClientRect(hWnd, &rc);
+      if (pt.y < 32 && pt.x < (rc.right - 140))
+        return HTCAPTION;
+    }
+    return hit;
   }
   case WM_SIZE:
     if (g_pd3dDevice != nullptr && wParam != SIZE_MINIMIZED) {
