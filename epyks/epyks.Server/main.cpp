@@ -644,6 +644,7 @@ public:
                     epyks::ServerMessage forward;
                     forward.server_id = req.server_id;
                     forward.channel_id = req.channel_id;
+                    forward.username = username;
                     forward.content = "[" + std::string(timeStr) + "] [" + username + "] " + req.content;
                     auto forwardBytes = forward.Serialize();
 

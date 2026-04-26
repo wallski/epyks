@@ -24,6 +24,8 @@
 #include <commdlg.h>
 #include <tuple>
 #include <algorithm>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "comdlg32.lib")
 
@@ -182,9 +184,10 @@ public:
   int currentVoiceChannelId = -1;
   std::atomic<int> currentServerId{-1};
   std::atomic<int> currentChannelId{-1};
+  std::string pendingProfileRequest;
+  bool pendingProfileSilent = false;
   std::string selectedProfileUser;
   bool showProfileModal = false;
-  std::string pendingProfileRequest = "";
   std::string lastServerOpStatus = "";
   epyks::UserProfile selectedProfile;
   
@@ -327,11 +330,15 @@ public:
             std::vector<uint8_t>(packet.data.begin(), packet.data.end());
         if (resp.Deserialize(bytes)) {
           if (resp.success) {
-            loginSuccess = true;
             sessionToken = resp.session_token;
-            RequestProfile();
+            loginSuccess = true;
+            myProfile.username = username;
+            myProfile.pfp_url = ""; // Will be updated by RequestProfile
+            userProfileCache[username] = myProfile;
+            SaveConfig(username, sessionToken, "", "");
             RequestMyServers();
             RequestFriendList();
+            RequestProfile("", true); // Get our full profile silently
           } else {
             loginFailed = true;
             loginErrorMsg = resp.error;
@@ -361,7 +368,7 @@ public:
           servers[msg.server_id].channelMessages[msg.channel_id].push_back(m);
           
           if (userProfileCache.find(m.sender) == userProfileCache.end()) {
-              RequestProfile(m.sender);
+              RequestProfile(m.sender, true);
           }
         }
       } else if (packet.type == epyks::PacketType::CREATE_SERVER) {
@@ -523,9 +530,12 @@ public:
               }
           }
           if (profile.username == pendingProfileRequest) {
-            selectedProfile = profile;
-            showProfileModal = true;
+            if (!pendingProfileSilent) {
+                selectedProfile = profile;
+                showProfileModal = true;
+            }
             pendingProfileRequest = "";
+            pendingProfileSilent = false;
           }
         }
       } else if (packet.type == epyks::PacketType::MEMBER_LIST_RESPONSE) {
@@ -652,10 +662,11 @@ public:
     send(sock, (char *)data.data(), len, 0);
   }
 
-  void RequestProfile(const std::string &target = "") {
+  void RequestProfile(const std::string &target = "", bool silent = false) {
     if (!connected)
       return;
     pendingProfileRequest = target.empty() ? username : target;
+    pendingProfileSilent = silent;
     epyks::Packet pkt;
     pkt.type = epyks::PacketType::GET_PROFILE;
     pkt.data = target;
@@ -1083,6 +1094,31 @@ struct AppConfig {
   }
 };
 
+void DrawHomeIcon(ImVec2 center, float size, ImU32 color) {
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    float h = size * 0.4f;
+    float w = size * 0.4f;
+    ImVec2 p[5] = {
+        {center.x, center.y - h},
+        {center.x - w, center.y},
+        {center.x - w, center.y + h},
+        {center.x + w, center.y + h},
+        {center.x + w, center.y}
+    };
+    draw->AddPolyline(p, 5, color, ImDrawFlags_Closed, 2.0f);
+}
+
+void DrawBrowserIcon(ImVec2 center, float size, ImU32 color) {
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    float r = size * 0.45f;
+    draw->AddCircle(center, r, color, 0, 2.0f);
+    // Vertical "meridians"
+    draw->AddBezierCubic(ImVec2(center.x, center.y - r), ImVec2(center.x - r * 0.5f, center.y - r * 0.5f), ImVec2(center.x - r * 0.5f, center.y + r * 0.5f), ImVec2(center.x, center.y + r), color, 1.5f);
+    draw->AddBezierCubic(ImVec2(center.x, center.y - r), ImVec2(center.x + r * 0.5f, center.y - r * 0.5f), ImVec2(center.x + r * 0.5f, center.y + r * 0.5f), ImVec2(center.x, center.y + r), color, 1.5f);
+    // Horizontal "equator"
+    draw->AddLine(ImVec2(center.x - r, center.y), ImVec2(center.x + r, center.y), color, 1.5f);
+}
+
 void DrawAvatar(const std::string &username, const std::string &pfpUrl,
                 float size) {
   ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -1325,8 +1361,18 @@ static void DrawCallView(ChatClient& client) {
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.9f, 0.2f, 0.2f, 1.f));
     ImGui::SetCursorPosY(10);
     if (ImGui::Button("LEAVE", ImVec2(85, 40))) {
+        int srvId = client.currentServerId;
         client.SendLeaveVoice();
         client.showVoiceCallWindow = false;
+        // Switch to first text channel
+        if (srvId != -1) {
+            for (auto& c : client.servers[srvId].channels) {
+                if (c.type == 0) {
+                    client.currentChannelId = c.id;
+                    break;
+                }
+            }
+        }
     }
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
@@ -1346,9 +1392,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                    nullptr,    nullptr,     nullptr,
                    nullptr,    _T("Epyks"), nullptr};
   RegisterClassEx(&wc);
-  HWND hwnd = CreateWindow(wc.lpszClassName, _T("Epyks - Modern Chat"),
-                           WS_OVERLAPPEDWINDOW, 100, 100, 1280, 800, nullptr,
-                           nullptr, wc.hInstance, nullptr);
+  HWND hwnd = CreateWindowEx(WS_EX_APPWINDOW, wc.lpszClassName, _T("Epyks"),
+                           WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX, 
+                           100, 100, 1280, 800, nullptr, nullptr, wc.hInstance, nullptr);
+
+  // Enable shadow for borderless window
+  const MARGINS shadow_margins = { 1, 1, 1, 1 };
+  DwmExtendFrameIntoClientArea(hwnd, &shadow_margins);
 
   if (!CreateDeviceD3D(hwnd)) {
     CleanupDeviceD3D();
@@ -1504,18 +1554,51 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    ImVec2 viewportSize = ImGui::GetMainViewport()->Size;
+    // Custom Title Bar
+    {
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, 32));
+        ImGui::Begin("TitleBar", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+        
+        // Window Dragging handled via WM_NCHITTEST in WndProc for smoothness
+
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        draw->AddRectFilled(ImVec2(0, 0), ImVec2(io.DisplaySize.x, 32), ImColor(30, 31, 34));
+        
+        ImGui::SetCursorPos(ImVec2(10, 6));
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "EPYKS");
+        
+        float btnW = 46;
+        ImGui::SetCursorPos(ImVec2(io.DisplaySize.x - btnW * 3, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0,0,0,0));
+        
+        if (ImGui::Button("_", ImVec2(btnW, 32))) ShowWindow(hwnd, SW_MINIMIZE);
+        ImGui::SameLine(0, 0);
+        if (ImGui::Button("[ ]", ImVec2(btnW, 32))) {
+            if (IsZoomed(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+            else ShowWindow(hwnd, SW_MAXIMIZE);
+        }
+        ImGui::SameLine(0, 0);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.2f, 0.2f, 1.0f));
+        if (ImGui::Button("X", ImVec2(btnW, 32))) PostQuitMessage(0);
+        
+        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar();
+        ImGui::End();
+    }
+
+    ImGui::SetNextWindowPos(ImVec2(0, 32));
+    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, io.DisplaySize.y - 32));
 
     if (showLogin || showRegister) {
-      ImGui::SetNextWindowPos(ImVec2(0, 0));
-      ImGui::SetNextWindowSize(viewportSize);
       ImGui::PushStyleColor(ImGuiCol_WindowBg, config.sidebarColor);
       ImGui::Begin("LoginScreen", nullptr,
                    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
 
-      float centerX = viewportSize.x * 0.5f;
-      float centerY = viewportSize.y * 0.5f;
+      float centerX = io.DisplaySize.x * 0.5f;
+      float centerY = io.DisplaySize.y * 0.5f;
       ImGui::SetCursorPos(ImVec2(centerX - 200, centerY - 250));
 
       ImGui::PushStyleColor(ImGuiCol_ChildBg, config.bgColor);
@@ -1635,8 +1718,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
       ImGui::PopStyleColor(2);
       ImGui::End();
     } else {
-      ImGui::SetNextWindowPos(ImVec2(0, 0));
-      ImGui::SetNextWindowSize(viewportSize);
+      ImGui::SetNextWindowPos(ImVec2(0, 32));
+      ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, io.DisplaySize.y - 32));
       ImGui::Begin("Epyks Chat", nullptr,
                    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
@@ -1655,12 +1738,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                               ImVec4(0.20f, 0.21f, 0.24f, 1.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 24.0f);
       }
-      if (ImGui::Button("HM", ImVec2(50, 50))) {
+      if (ImGui::Button("##HM", ImVec2(50, 50))) {
         client.currentServerId = -1;
         client.currentChannelId = -1;
         currentDM = "";
         client.showVoiceCallWindow = false;
       }
+      ImVec2 hmCenter = ImVec2(ImGui::GetItemRectMin().x + 25, ImGui::GetItemRectMin().y + 25);
+      DrawHomeIcon(hmCenter, 24, IM_COL32_WHITE);
       ImGui::PopStyleVar();
       ImGui::PopStyleColor();
 
@@ -1716,11 +1801,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::SetTooltip("Create a Server");
 
       // Browse Servers Button at the bottom
-      ImGui::SetCursorPos(ImVec2(11, ImGui::GetWindowHeight() - 62));
-      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.16f, 0.18f, 1.0f));
-      if (ImGui::Button("B##browse", ImVec2(50, 50)))
-        showBrowseServers = true;
-      ImGui::PopStyleColor();
+        ImGui::SetCursorPos(ImVec2(11, ImGui::GetWindowHeight() - 61));
+        if (showBrowseServers) {
+          ImGui::PushStyleColor(ImGuiCol_Button, config.accentColor);
+          ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 16.0f);
+        } else {
+          ImGui::PushStyleColor(ImGuiCol_Button,
+                                ImVec4(0.20f, 0.21f, 0.24f, 1.0f));
+          ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 24.0f);
+        }
+        if (ImGui::Button("##B", ImVec2(50, 50))) {
+          showBrowseServers = !showBrowseServers;
+          if (showBrowseServers)
+            client.SendListServers();
+        }
+        ImVec2 bCenter = ImVec2(ImGui::GetItemRectMin().x + 25, ImGui::GetItemRectMin().y + 25);
+        DrawBrowserIcon(bCenter, 24, IM_COL32_WHITE);
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Browse Servers");
 
@@ -1757,11 +1855,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.8f, 0.8f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.4f, 0.4f, 1.0f, 1.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-        if (ImGui::Button("+##adddm", ImVec2(22, 22))) {
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0,0));
+        if (ImGui::Button("+##adddm", ImVec2(20, 20))) {
             currentDM = "friends_dashboard";
             friendsTab = 2;
         }
-        ImGui::PopStyleVar();
+        ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(2);
         ImGui::Separator();
 
@@ -2071,6 +2170,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             
             std::string user = m.sender;
             std::string content = m.content;
+            std::string timeStr = "Today";
+
+            // Parse out "[HH:MM] [username] " if present
+            if (content.size() > 7 && content[0] == '[' && content[6] == ']') {
+                timeStr = content.substr(1, 5);
+                size_t secondClose = content.find(']', 7);
+                if (secondClose != std::string::npos) {
+                    content = content.substr(secondClose + 2);
+                }
+            }
             
             std::string pfp = "";
             if (client.userProfileCache.count(user)) {
@@ -2085,6 +2194,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             ImGui::SameLine(64);
             ImGui::BeginGroup();
             ImGui::TextColored(config.accentColor, "%s", user.c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", timeStr.c_str());
             ImGui::TextWrapped("%s", content.c_str());
             ImGui::EndGroup();
             if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
@@ -2429,6 +2540,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
             ImGui::Text("Channel Management");
             ImGui::Separator();
+            std::vector<std::string> catOpts = {"(None)"};
+            for (auto &ch : server.channels) {
+                if (ch.type == 2) {
+                    bool dup = false;
+                    for (auto &x : catOpts) if (x == ch.name) { dup = true; break; }
+                    if (!dup) catOpts.push_back(ch.name);
+                }
+            }
             ImGui::Dummy(ImVec2(0, 10));
             if (ImGui::Button("+ Create Channel", ImVec2(170, 35))) {
               showInlineChannelForm = true;
@@ -2465,16 +2584,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 ImGui::Combo("##iltype", &inlineChType, "Text\0Voice\0");
                 ImGui::PopItemWidth();
 
-                // Category dropdown from existing categories
-                std::vector<std::string> catOpts = {"(None)"};
-                for (auto &ch : server.channels) {
-                  std::string c = (ch.type == 2) ? ch.name : ch.category;
-                  if (!c.empty()) {
-                    bool dup = false;
-                    for (auto &x : catOpts) if (x == c) { dup = true; break; }
-                    if (!dup) catOpts.push_back(c);
-                  }
-                }
                 if (inlineChCatIdx >= (int)catOpts.size()) inlineChCatIdx = 0;
                 ImGui::Dummy(ImVec2(0, 4));
                 ImGui::SetCursorPosX(12);
@@ -2529,7 +2638,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
               ImGui::Text("%s", ch.name.c_str());
               ImGui::SameLine(300);
               if (ImGui::Button(("Edit##" + std::to_string(ch.id)).c_str())) {
-                // Edit logic
+                  showInlineChannelForm = true;
+                  inlineFormIsCategory = false;
+                  strcpy_s(inlineChName, ch.name.c_str());
+                  inlineChType = ch.type;
+                  // Set category if it belongs to one
+                  for(int idx=0; idx < (int)catOpts.size(); idx++) if(catOpts[idx] == ch.category) inlineChCatIdx = idx;
               }
               ImGui::SameLine();
               if (ImGui::Button(("Delete##" + std::to_string(ch.id)).c_str())) {
@@ -2978,6 +3092,18 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
   if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
     return true;
   switch (msg) {
+  case WM_NCCALCSIZE:
+      return 0;
+  case WM_NCHITTEST: {
+      LRESULT hit = DefWindowProc(hWnd, msg, wParam, lParam);
+      if (hit == HTCLIENT) {
+          POINT pt = { LOWORD(lParam), HIWORD(lParam) };
+          ScreenToClient(hWnd, &pt);
+          RECT rc; GetClientRect(hWnd, &rc);
+          if (pt.y < 32 && pt.x < (rc.right - 140)) return HTCAPTION;
+      }
+      return hit;
+  }
   case WM_SIZE:
     if (g_pd3dDevice != nullptr && wParam != SIZE_MINIMIZED) {
       CleanupRenderTarget();
