@@ -163,22 +163,27 @@ void LogToFile(const std::string &message) {
 }
 
 void SaveConfig(const std::string &username, const std::string &token,
-                const std::string &inDev = "", const std::string &outDev = "") {
+                const std::string &inDev = "", const std::string &outDev = "", bool rnnoise = false) {
   std::ofstream file(GetConfigPath());
   if (file) {
     file << username << "\n"
          << token << "\n"
          << inDev << "\n"
-         << outDev << "\n";
+         << outDev << "\n"
+         << (rnnoise ? "1" : "0") << "\n";
   }
 }
 
 bool LoadConfig(std::string &username, std::string &token, std::string &inDev,
-                std::string &outDev) {
+                std::string &outDev, bool &rnnoise) {
   std::ifstream file(GetConfigPath());
   if (file && std::getline(file, username) && std::getline(file, token)) {
     std::getline(file, inDev);
     std::getline(file, outDev);
+    std::string rn;
+    if (std::getline(file, rn)) {
+        rnnoise = (rn == "1");
+    }
     return !username.empty() && !token.empty();
   }
   return false;
@@ -279,6 +284,9 @@ public:
   char serverPassBuf[64] = {0};
   std::string pendingMediaUploadUrl; // "uploading" while waiting, then
                                      // "server-media://key" when done
+  int mediaUploadServerId = -1;
+  int mediaUploadChannelId = -1;
+  std::string mediaUploadTargetDM;
 
   std::atomic<bool> loginSuccess{false};
   std::atomic<bool> loginFailed{false};
@@ -551,7 +559,35 @@ public:
             // client
             if (pendingMediaUploadUrl == "uploading") {
               pendingMediaUploadUrl = "server-media://" + fname;
+              if (mediaUploadServerId != -1) {
+                  SendServerMessage(mediaUploadServerId, mediaUploadChannelId, pendingMediaUploadUrl);
+                  mediaUploadServerId = -1;
+              } else if (!mediaUploadTargetDM.empty()) {
+                  SendPrivateMessage(mediaUploadTargetDM, pendingMediaUploadUrl);
+                  mediaUploadTargetDM.clear();
+              }
+              pendingMediaUploadUrl.clear();
             }
+          }
+        }
+      } else if (packet.type == epyks::PacketType::PRIVATE_MESSAGE) {
+        epyks::PrivateMessage msg;
+        auto bytes =
+            std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+        if (msg.Deserialize(bytes)) {
+          std::string other = (msg.sender_username == username) ? msg.target_username : msg.sender_username;
+          if (dmChats.find(other) == dmChats.end()) {
+              dmChats[other] = {};
+          }
+          Message m;
+          m.id = msg.message_id;
+          m.reply_to_id = msg.reply_to_id;
+          m.sender = msg.sender_username;
+          m.content = msg.content;
+          dmChats[other].messages.push_back(m);
+
+          if (userProfileCache.find(m.sender) == userProfileCache.end()) {
+            RequestProfile(m.sender, true);
           }
         }
       } else if (packet.type == epyks::PacketType::SERVER_MESSAGE) {
@@ -816,21 +852,29 @@ public:
     send(sock, (char *)data.data(), len, 0);
   }
 
-  void SendDM(const std::string &to, const std::string &text) {
+  void SendPrivateMessage(const std::string &to, const std::string &text, uint64_t replyTo = 0) {
     if (!connected || text.empty())
       return;
     epyks::PrivateMessage pm;
     pm.target_username = to;
     pm.sender_username = username;
     pm.content = text;
-    pm.reply_to_id = replyingToId;
+    pm.reply_to_id = replyTo;
     auto pmBytes = pm.Serialize();
 
     epyks::Packet packet;
     packet.type = epyks::PacketType::PRIVATE_MESSAGE;
     packet.data = std::string(pmBytes.begin(), pmBytes.end());
     packet.timestamp = GetTickCount64();
+    SendPacket(packet);
+  }
 
+  void RequestDMHistory(const std::string &target) {
+    if (!connected)
+      return;
+    epyks::Packet packet;
+    packet.type = epyks::PacketType::HISTORY;
+    packet.data = "DM:" + target;
     auto data = packet.Serialize();
     uint32_t len = (uint32_t)data.size();
     send(sock, (char *)&len, 4, 0);
@@ -1542,16 +1586,16 @@ void DrawAvatar(const std::string &username, const std::string &pfpUrl,
 
 void DrawGearIcon(ImVec2 center, float size, ImU32 color) {
   ImDrawList *dl = ImGui::GetWindowDrawList();
-  float r = size * 0.35f;
-  float innerR = size * 0.12f;
+  float r = size * 0.4f;
+  float innerR = size * 0.15f;
   dl->AddCircle(center, r, color, 32, 2.0f);
   dl->AddCircleFilled(center, innerR, color);
   for (int i = 0; i < 8; i++) {
-    float angle = i * (3.14159f * 2.0f / 8.0f);
+    float angle = i * (3.14159265f * 2.0f / 8.0f);
     ImVec2 p1 = {center.x + cosf(angle) * r, center.y + sinf(angle) * r};
-    ImVec2 p2 = {center.x + cosf(angle) * (r + size * 0.15f),
-                 center.y + sinf(angle) * (r + size * 0.15f)};
-    dl->AddLine(p1, p2, color, 2.5f);
+    ImVec2 p2 = {center.x + cosf(angle) * (r + size * 0.2f),
+                 center.y + sinf(angle) * (r + size * 0.2f)};
+    dl->AddLine(p1, p2, color, 3.0f);
   }
 }
 
@@ -1894,12 +1938,14 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
   bool rememberMe = true;
 
   std::string savedInDev, savedOutDev, savedUser;
-  if (LoadConfig(savedUser, client.sessionToken, savedInDev, savedOutDev)) {
+  bool savedRnnoise = false;
+  if (LoadConfig(savedUser, client.sessionToken, savedInDev, savedOutDev, savedRnnoise)) {
     strcpy_s(usernameBuf, savedUser.c_str());
     triedAutoLogin = true;
     if (!savedInDev.empty() || !savedOutDev.empty()) {
       client.audio->SetDevices(savedInDev, savedOutDev);
     }
+    client.audio->SetRNNoiseEnabled(savedRnnoise);
   }
 
   char inputBuf[256] = "";
@@ -2002,10 +2048,12 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
         client.username = usernameBuf;
 
         std::string inDev, outDev;
-        if (LoadConfig(client.username, client.sessionToken, inDev, outDev)) {
+        bool rnn = false;
+        if (LoadConfig(client.username, client.sessionToken, inDev, outDev, rnn)) {
           if (!inDev.empty() || !outDev.empty()) {
             client.audio->SetDevices(inDev, outDev);
           }
+          client.audio->SetRNNoiseEnabled(rnn);
         }
 
         if (rememberMe && !client.sessionToken.empty()) {
@@ -2385,6 +2433,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             currentDM = friend_.username;
             friend_.hasUnread = false;
             client.showVoiceCallWindow = false;
+            client.RequestDMHistory(currentDM);
           }
           ImGui::PopStyleColor();
         }
@@ -2477,8 +2526,9 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
       DrawAvatar(client.username, client.myProfile.pfp_url, 32);
       ImGui::SameLine(48);
       ImGui::BeginGroup();
+      ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 2);
       ImGui::Text("%s", client.username.c_str());
-      ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, -2));
+      ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 1));
       ImGui::SetWindowFontScale(0.85f);
       ImGui::TextDisabled("Online");
       ImGui::SetWindowFontScale(1.0f);
@@ -2524,7 +2574,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
       ImVec2 uGearPos = ImGui::GetItemRectMin();
       uGearPos.x += 16;
       uGearPos.y += 16;
-      DrawGearIcon(uGearPos, 14, IM_COL32_WHITE);
+      DrawGearIcon(uGearPos, 20, IM_COL32_WHITE);
       ImGui::PopStyleColor(3);
       ImGui::PopStyleColor();
       ImGui::EndChild();
@@ -2608,6 +2658,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             if (ImGui::Button(("Message##dm_" + f.username).c_str())) {
               currentDM = f.username;
               f.hasUnread = false;
+              client.RequestDMHistory(f.username);
             }
             ImGui::PopStyleColor();
             if (ImGui::BeginPopupContextItem(("ctx_" + f.username).c_str())) {
@@ -2861,8 +2912,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
           float inputY = ImGui::GetWindowHeight() - 52;
           
           if (client.replyingToId != 0 || client.editingMessageId != 0) {
-              inputY -= 30;
-              ImGui::SetCursorPos(ImVec2(8, inputY - 5));
+              ImGui::SetCursorPos(ImVec2(8, inputY - 35));
               ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.16f, 0.18f, 1.0f));
               ImGui::BeginChild("ReplyEditBar", ImVec2(ImGui::GetContentRegionAvail().x - 16, 30), true);
               if (client.replyingToId != 0) {
@@ -2912,6 +2962,9 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                 f.close();
                 client.SendMediaUpload(buffer);
                 client.pendingMediaUploadUrl = "uploading";
+                client.mediaUploadServerId = client.currentServerId;
+                client.mediaUploadChannelId = client.currentChannelId;
+                client.mediaUploadTargetDM = "";
               }
             }
           }
@@ -3086,8 +3139,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
         ImGui::EndChild();
 
         if (client.replyingToId != 0 || client.editingMessageId != 0) {
-            ImGui::SetCursorPos(ImVec2(16, ImGui::GetWindowHeight() - 78));
-            ImGui::BeginChild("DMReplyEditBar", ImVec2(ImGui::GetContentRegionAvail().x - 16, 26), true);
+            ImGui::SetCursorPos(ImVec2(16, ImGui::GetWindowHeight() - 83));
+            ImGui::BeginChild("DMReplyEditBar", ImVec2(ImGui::GetContentRegionAvail().x - 16, 30), true);
             if (client.replyingToId != 0) ImGui::Text("Replying to @%s", client.replyingToUser.c_str());
             else ImGui::Text("Editing DM...");
             ImGui::SameLine(ImGui::GetWindowWidth() - 30);
@@ -3103,9 +3156,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
               client.SendEditMessage(client.editingMessageId, dmInputBuf);
               client.editingMessageId = 0;
           } else {
-              client.SendDM(currentDM, dmInputBuf);
-              // Note: client.SendDM currently doesn't support reply_to_id, 
-              // but we can add it easily if needed.
+              client.SendPrivateMessage(currentDM, dmInputBuf, client.replyingToId);
+              client.replyingToId = 0;
           }
           dmInputBuf[0] = '\0';
           client.replyingToId = 0;
@@ -3355,7 +3407,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                       outputDevices[selectedOutputDevice].name);
                   SaveConfig(client.username, client.sessionToken,
                              inputDevices[selectedInputDevice].name,
-                             outputDevices[selectedOutputDevice].name);
+                             outputDevices[selectedOutputDevice].name,
+                             client.audio->GetRNNoiseEnabled());
                 }
               }
               ImGui::EndCombo();
@@ -3376,7 +3429,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                       outputDevices[selectedOutputDevice].name);
                   SaveConfig(client.username, client.sessionToken,
                              inputDevices[selectedInputDevice].name,
-                             outputDevices[selectedOutputDevice].name);
+                             outputDevices[selectedOutputDevice].name,
+                             client.audio->GetRNNoiseEnabled());
                 }
               }
               ImGui::EndCombo();
@@ -3395,6 +3449,10 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             bool rnnoiseEnabled = client.audio->GetRNNoiseEnabled();
             if (ImGui::Checkbox("Enable RNNoise (Removes background noise)", &rnnoiseEnabled)) {
                 client.audio->SetRNNoiseEnabled(rnnoiseEnabled);
+                SaveConfig(client.username, client.sessionToken,
+                           client.audio->GetCurrentInputDevice(),
+                           client.audio->GetCurrentOutputDevice(),
+                           rnnoiseEnabled);
             }
             ImGui::TextDisabled("Uses a trained neural network to filter out keyboard and fan noise.");
 
