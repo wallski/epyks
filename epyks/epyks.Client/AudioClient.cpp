@@ -7,6 +7,11 @@
 #include <fstream>
 #include <chrono>
 #include <iomanip>
+#include <algorithm>
+#include <cmath>
+
+// RNNoise public API — the implementation is compiled via rnnoise_amalgam.c
+#include "../../deps/rnnoise/rnnoise.h"
 
 static void AudioLog(const std::string& msg) {
     // Debug logging disabled
@@ -43,6 +48,16 @@ bool AudioClient::Initialize() {
         return false;
     }
 
+    // Initialize RNNoise (two instances — one per 480-sample half of our 960-frame)
+    m_rnnoise0 = rnnoise_create(nullptr);
+    m_rnnoise1 = rnnoise_create(nullptr);
+    if (!m_rnnoise0 || !m_rnnoise1) {
+        std::cerr << "Failed to initialize RNNoise" << std::endl;
+        // Non-fatal — we'll just disable it
+        if (m_rnnoise0) { rnnoise_destroy(m_rnnoise0); m_rnnoise0 = nullptr; }
+        if (m_rnnoise1) { rnnoise_destroy(m_rnnoise1); m_rnnoise1 = nullptr; }
+    }
+
     m_context = new ma_context;
     ma_backend backends[] = { ma_backend_wasapi, ma_backend_dsound, ma_backend_winmm };
     AudioLog("Initializing context with backends: WASAPI, DSound, WinMM...");
@@ -67,8 +82,7 @@ bool AudioClient::Initialize() {
     deviceConfig.sampleRate         = SAMPLE_RATE;
     deviceConfig.dataCallback       = DataCallback;
     deviceConfig.pUserData          = this;
-    // Set specific frame size so we always get FRAME_SIZE (960) frames per callback
-    deviceConfig.periodSizeInFrames = FRAME_SIZE; 
+    deviceConfig.periodSizeInFrames = FRAME_SIZE;
 
     if (ma_device_init(m_context, &deviceConfig, m_device) != MA_SUCCESS) {
         std::cerr << "Failed to initialize miniaudio device." << std::endl;
@@ -111,7 +125,14 @@ void AudioClient::Shutdown() {
         m_decoder = nullptr;
     }
 
+    if (m_rnnoise0) { rnnoise_destroy(m_rnnoise0); m_rnnoise0 = nullptr; }
+    if (m_rnnoise1) { rnnoise_destroy(m_rnnoise1); m_rnnoise1 = nullptr; }
+
     m_isInitialized = false;
+}
+
+void AudioClient::SetRNNoiseEnabled(bool enabled) {
+    m_rnnoiseEnabled = enabled && (m_rnnoise0 != nullptr);
 }
 
 bool AudioClient::StartVoice() {
@@ -230,7 +251,7 @@ bool AudioClient::SetDevices(const std::string& inputName, const std::string& ou
     deviceConfig.sampleRate         = SAMPLE_RATE;
     deviceConfig.dataCallback       = DataCallback;
     deviceConfig.pUserData          = this;
-    deviceConfig.periodSizeInFrames = FRAME_SIZE; 
+    deviceConfig.periodSizeInFrames = FRAME_SIZE;
 
     if (ma_device_init(m_context, &deviceConfig, m_device) != MA_SUCCESS) {
         return false;
@@ -265,53 +286,72 @@ void AudioClient::DataCallback(ma_device* pDevice, void* pOutput, const void* pI
 }
 
 void AudioClient::ProcessAudio(void* pOutput, const void* pInput, unsigned int frameCount) {
-    // 1. Process Capture (Input -> Encode -> m_outQueue)
+    // ---------------------------------------------------------------
+    // 1. CAPTURE: microphone -> (optional RNNoise) -> VAD -> Opus encode
+    // ---------------------------------------------------------------
     if (pInput != NULL && !m_isMuted && !m_isDeafened) {
         const opus_int16* pcmInput = (const opus_int16*)pInput;
         
-        // Simple speaking detection (RMS volume)
+        // --- Optional RNNoise AI noise cancellation ---
+        // RNNoise works on float samples, in RNNOISE_FRAME (480) chunks.
+        // Our frame is 960 samples, so we process it in two halves.
+        static opus_int16 cleanBuf[FRAME_SIZE];
+        const opus_int16* pcmToEncode = pcmInput;
+
+        if (m_rnnoiseEnabled && m_rnnoise0 && m_rnnoise1 && frameCount == (unsigned)FRAME_SIZE) {
+            float floatIn[RNNOISE_FRAME];
+            float floatOut[RNNOISE_FRAME];
+
+            // First half (samples 0..479)
+            for (int i = 0; i < RNNOISE_FRAME; i++)
+                floatIn[i] = (float)pcmInput[i];
+            rnnoise_process_frame(m_rnnoise0, floatOut, floatIn);
+            for (int i = 0; i < RNNOISE_FRAME; i++)
+                cleanBuf[i] = (opus_int16)std::clamp(floatOut[i], -32768.0f, 32767.0f);
+
+            // Second half (samples 480..959)
+            for (int i = 0; i < RNNOISE_FRAME; i++)
+                floatIn[i] = (float)pcmInput[RNNOISE_FRAME + i];
+            rnnoise_process_frame(m_rnnoise1, floatOut, floatIn);
+            for (int i = 0; i < RNNOISE_FRAME; i++)
+                cleanBuf[RNNOISE_FRAME + i] = (opus_int16)std::clamp(floatOut[i], -32768.0f, 32767.0f);
+
+            pcmToEncode = cleanBuf;
+        }
+
+        // --- VAD: RMS level detection ---
         long long sumSquare = 0;
         for (unsigned int i = 0; i < frameCount; ++i) {
-            sumSquare += (long long)pcmInput[i] * pcmInput[i];
+            sumSquare += (long long)pcmToEncode[i] * pcmToEncode[i];
         }
         double rms = sqrt((double)sumSquare / frameCount);
-        
         float level = (float)(rms / 32768.0);
         m_currentLevel = level;
 
         static int vadHoldCount = 0;
 
         if (m_vadAuto) {
-            // Update noise floor only if the current level is close to the noise floor, 
-            // or slowly decay the noise floor if it's too high.
             if (level < m_noiseFloor * 2.5f) {
-                // Background noise: track it quickly
                 m_noiseFloor = m_noiseFloor * 0.99f + level * 0.01f;
             } else {
-                // Voice detected: decay noise floor very slowly so it doesn't get dragged up by speaking
                 m_noiseFloor = m_noiseFloor * 0.999f + 0.001f * 0.0001f;
             }
-            
-            // Target threshold is dynamically above the noise floor
             float targetThreshold = m_noiseFloor * 4.0f + 0.005f;
-            
-            // Clamp target threshold to a reasonable range
             if (targetThreshold < 0.002f) targetThreshold = 0.002f;
             if (targetThreshold > 0.1f) targetThreshold = 0.1f;
             m_vadThreshold = targetThreshold;
         }
-        
+
         if (level > m_vadThreshold) {
-            vadHoldCount = 20; // Hold for ~20 frames
+            vadHoldCount = 20; // Hold for ~20 frames after speech stops
         }
-        
+
         m_isSpeaking = (vadHoldCount > 0);
         if (vadHoldCount > 0) vadHoldCount--;
 
         if (m_isSpeaking) {
             unsigned char cbits[MAX_PACKET_SIZE];
-            // Ensure frameCount matches Opus expected frame size
-            int nbBytes = opus_encode(m_encoder, pcmInput, frameCount, cbits, MAX_PACKET_SIZE);
+            int nbBytes = opus_encode(m_encoder, pcmToEncode, frameCount, cbits, MAX_PACKET_SIZE);
             if (nbBytes > 0) {
                 std::vector<uint8_t> encodedPacket(cbits, cbits + nbBytes);
                 std::lock_guard<std::mutex> lock(m_outMutex);
@@ -323,7 +363,9 @@ void AudioClient::ProcessAudio(void* pOutput, const void* pInput, unsigned int f
         m_currentLevel = 0.0f;
     }
 
-    // 2. Process Playback (m_inQueue -> Decode -> Output)
+    // ---------------------------------------------------------------
+    // 2. PLAYBACK: Opus decode -> output
+    // ---------------------------------------------------------------
     if (pOutput != NULL) {
         memset(pOutput, 0, frameCount * CHANNELS * sizeof(opus_int16));
         if (!m_isDeafened) {

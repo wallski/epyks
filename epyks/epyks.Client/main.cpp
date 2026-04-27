@@ -192,9 +192,16 @@ struct Friend {
   bool hasUnread = false;
 };
 
+struct Message {
+  std::string sender;
+  std::string content;
+  uint64_t id = 0;
+  uint64_t reply_to_id = 0;
+};
+
 struct DMChat {
   std::string username;
-  std::vector<std::string> messages;
+  std::vector<Message> messages;
 };
 
 struct Channel {
@@ -202,11 +209,6 @@ struct Channel {
   std::string name;
   int type;
   std::string category;
-};
-
-struct Message {
-  std::string sender;
-  std::string content;
 };
 
 struct ServerChat {
@@ -256,10 +258,17 @@ public:
   std::atomic<int> currentChannelId{-1};
   std::string pendingProfileRequest;
   bool pendingProfileSilent = false;
-  std::string selectedProfileUser;
   bool showProfileModal = false;
-  std::string lastServerOpStatus = "";
   epyks::UserProfile selectedProfile;
+  std::string lastServerOpStatus;
+
+  uint64_t editingMessageId = 0;
+  std::string editingMessageContent;
+  uint64_t replyingToId = 0;
+  std::string replyingToUser;
+  bool showMentionPopup = false;
+  std::vector<std::string> mentionSuggestions;
+  int mentionCursorPos = -1;
 
   bool showVoiceCallWindow = false;
   bool isMuted = false;
@@ -401,7 +410,7 @@ public:
       uint32_t len = 0;
       if (recv(sock, (char *)&len, 4, MSG_WAITALL) != 4)
         break;
-      if (len > 100000)
+      if (len > 10000000) // 10MB max packet size
         break;
       std::vector<uint8_t> buffer(len);
       int received = 0;
@@ -442,34 +451,31 @@ public:
           }
         }
       } else if (packet.type == epyks::PacketType::PRIVATE_MESSAGE) {
-        std::string data = packet.data;
-        if (data.find("[DM from ") == 0) {
-          size_t start = 9;
-          size_t end = data.find("]:");
-          if (end != std::string::npos) {
-            std::string from = data.substr(start, end - start);
-            std::string msg = data.substr(end + 2);
-            dmChats[from].messages.push_back(from + ": " + msg);
-            dmChats[from].username = from;
-
-            for (auto &f : friends) {
-              if (f.username == from) {
-                f.hasUnread = true;
-                break;
-              }
-            }
+        epyks::PrivateMessage pm;
+        auto bytes =
+            std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+        if (pm.Deserialize(bytes)) {
+          Message m;
+          m.id = pm.message_id;
+          m.reply_to_id = pm.reply_to_id;
+          m.content = pm.content;
+          
+          std::string chatPartner;
+          if (pm.sender_username == username) {
+             // We sent it
+             chatPartner = pm.target_username;
+             m.sender = username;
+          } else {
+             // We received it
+             chatPartner = pm.sender_username;
+             m.sender = pm.sender_username;
           }
-        } else if (data.find("[DM to ") == 0) {
-          size_t start = 7;
-          size_t end = data.find("]:");
-          if (end != std::string::npos) {
-            std::string to = data.substr(start, end - start);
-            std::string msg = data.substr(end + 2);
-            dmChats[to].messages.push_back("You: " + msg);
-            dmChats[to].username = to;
-          }
+          
+          dmChats[chatPartner].messages.push_back(m);
+          dmChats[chatPartner].username = chatPartner;
         } else {
-          messages.push_back(data);
+           // Fallback for system messages sent as PMs (backward compatibility or system alerts)
+           messages.push_back("System DM: " + packet.data);
         }
       } else if (packet.type == epyks::PacketType::LOGIN_RESPONSE ||
                  packet.type == epyks::PacketType::TOKEN_LOGIN_RESPONSE) {
@@ -554,12 +560,62 @@ public:
             std::vector<uint8_t>(packet.data.begin(), packet.data.end());
         if (msg.Deserialize(bytes)) {
           Message m;
+          m.id = msg.message_id;
+          m.reply_to_id = msg.reply_to_id;
           m.sender = msg.username;
           m.content = msg.content;
           servers[msg.server_id].channelMessages[msg.channel_id].push_back(m);
 
           if (userProfileCache.find(m.sender) == userProfileCache.end()) {
             RequestProfile(m.sender, true);
+          }
+        }
+      } else if (packet.type == epyks::PacketType::EDIT_MESSAGE) {
+        epyks::EditMessage em;
+        auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+        if (em.Deserialize(bytes)) {
+          if (em.server_id != -1) {
+             auto& msgs = servers[em.server_id].channelMessages[em.channel_id];
+             for (auto& m : msgs) {
+               if (m.id == em.message_id) {
+                 m.content = em.new_content;
+                 break;
+               }
+             }
+          } else {
+             // Search all DMs
+             for (auto& pair : dmChats) {
+               for (auto& m : pair.second.messages) {
+                 if (m.id == em.message_id) {
+                   m.content = em.new_content;
+                   break;
+                 }
+               }
+             }
+          }
+        }
+      } else if (packet.type == epyks::PacketType::DELETE_MESSAGE) {
+        epyks::DeleteMessage dm;
+        auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
+        if (dm.Deserialize(bytes)) {
+          if (dm.server_id != -1) {
+             auto& msgs = servers[dm.server_id].channelMessages[dm.channel_id];
+             for (auto it = msgs.begin(); it != msgs.end(); ++it) {
+               if (it->id == dm.message_id) {
+                 msgs.erase(it);
+                 break;
+               }
+             }
+          } else {
+             for (auto& pair : dmChats) {
+               auto& msgs = pair.second.messages;
+               for (auto it = msgs.begin(); it != msgs.end(); ++it) {
+                 if (it->id == dm.message_id) {
+                   msgs.erase(it);
+                   break;
+                 }
+               }
+             }
           }
         }
       } else if (packet.type == epyks::PacketType::CREATE_SERVER) {
@@ -765,7 +821,9 @@ public:
       return;
     epyks::PrivateMessage pm;
     pm.target_username = to;
+    pm.sender_username = username;
     pm.content = text;
+    pm.reply_to_id = replyingToId;
     auto pmBytes = pm.Serialize();
 
     epyks::Packet packet;
@@ -854,6 +912,22 @@ public:
     send(sock, (char *)data.data(), len, 0);
   }
 
+  void SendDeleteAccount(const std::string &password) {
+    if (!connected)
+      return;
+    epyks::DeleteAccount req;
+    req.password = password;
+    auto bytes = req.Serialize();
+    epyks::Packet pkt;
+    pkt.type = epyks::PacketType::DELETE_ACCOUNT;
+    pkt.data = std::string(bytes.begin(), bytes.end());
+    auto data = pkt.Serialize();
+    uint32_t len = (uint32_t)data.size();
+    send(sock, (char *)&len, 4, 0);
+    send(sock, (char *)data.data(), len, 0);
+  }
+
+
   void RequestProfile(const std::string &target = "", bool silent = false) {
     if (!connected)
       return;
@@ -886,9 +960,18 @@ public:
     send(sock, (char *)data.data(), len, 0);
   }
 
-  void RespondFriendRequest(const std::string &target, bool accept) {
+  void RespondFriendRequest(const std::string &fullReqString, bool accept) {
     if (!connected)
       return;
+
+    // The stored string is "bob wants to add you as friend"
+    // Extract just the username portion
+    std::string target = fullReqString;
+    static const std::string suffix = " wants to add you as friend";
+    size_t pos = fullReqString.rfind(suffix);
+    if (pos != std::string::npos)
+      target = fullReqString.substr(0, pos);
+
     epyks::FriendResponse resp;
     resp.target_username = target;
     resp.accepted = accept;
@@ -903,8 +986,8 @@ public:
     send(sock, (char *)&len, 4, 0);
     send(sock, (char *)data.data(), len, 0);
 
-    auto it = std::find(friendRequests.begin(), friendRequests.end(),
-                        target + " wants to add you as friend");
+    // Erase the full stored string from friendRequests
+    auto it = std::find(friendRequests.begin(), friendRequests.end(), fullReqString);
     if (it != friendRequests.end())
       friendRequests.erase(it);
   }
@@ -1006,22 +1089,49 @@ public:
   }
 
   void SendServerMessage(int serverId, int channelId,
-                         const std::string &message) {
+                         const std::string &message, uint64_t replyTo = 0) {
     if (!connected)
       return;
     epyks::ServerMessage gm;
     gm.server_id = serverId;
     gm.channel_id = channelId;
     gm.content = message;
+    gm.reply_to_id = replyTo;
     auto pmBytes = gm.Serialize();
     epyks::Packet packet;
     packet.type = epyks::PacketType::SERVER_MESSAGE;
     packet.data = std::string(pmBytes.begin(), pmBytes.end());
     packet.timestamp = GetTickCount64();
-    auto data = packet.Serialize();
-    uint32_t len = (uint32_t)data.size();
-    send(sock, (char *)&len, 4, 0);
-    send(sock, (char *)data.data(), len, 0);
+    SendPacket(packet);
+  }
+
+  void SendEditMessage(uint64_t messageId, const std::string &newContent, int serverId = -1, int channelId = -1) {
+    if (!connected)
+      return;
+    epyks::EditMessage em;
+    em.message_id = messageId;
+    em.new_content = newContent;
+    em.server_id = serverId;
+    em.channel_id = channelId;
+    auto bytes = em.Serialize();
+    epyks::Packet pkt;
+    pkt.type = epyks::PacketType::EDIT_MESSAGE;
+    pkt.data = std::string(bytes.begin(), bytes.end());
+    SendPacket(pkt);
+  }
+
+  void SendDeleteMessage(uint64_t messageId, int serverId = -1, int channelId = -1) {
+    if (!connected)
+      return;
+    epyks::DeleteMessage dm;
+    dm.message_id = messageId;
+    dm.server_id = serverId;
+    dm.channel_id = channelId;
+    auto bytes = dm.Serialize();
+    epyks::Packet pkt;
+    pkt.type = epyks::PacketType::DELETE_MESSAGE;
+    pkt.data = std::string(bytes.begin(), bytes.end());
+    SendPacket(pkt);
   }
 
   void SendRenameServer(int serverId, const std::string &newName) {
@@ -1447,17 +1557,25 @@ void DrawGearIcon(ImVec2 center, float size, ImU32 color) {
 
 void DrawProfileModal(ChatClient &client, const epyks::UserProfile &profile,
                       bool *p_open) {
-  ImGui::SetNextWindowSize(ImVec2(400, 500));
+  if (*p_open)
+    ImGui::OpenPopup("User Profile##modal");
+
+  ImGui::SetNextWindowSize(ImVec2(420, 520), ImGuiCond_Always);
   ImVec2 center = ImGui::GetMainViewport()->GetCenter();
   ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-  if (ImGui::Begin("User Profile", p_open,
-                   ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse)) {
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.1f, 0.11f, 0.12f, 1.0f));
-    ImGui::BeginChild("ProfileHeader", ImVec2(0, 150), true);
-    ImGui::SetCursorPos(ImVec2(16, 40));
+
+  if (ImGui::BeginPopupModal("User Profile##modal", nullptr,
+                             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
+                             ImGuiWindowFlags_NoMove)) {
+    // Header banner
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.1f, 0.11f, 0.14f, 1.0f));
+    ImGui::BeginChild("ProfileHeader", ImVec2(0, 160), false);
+    ImGui::SetCursorPos(ImVec2(20, 40));
     DrawAvatar(profile.username, profile.pfp_url, 80);
-    ImGui::SetCursorPos(ImVec2(110, 60));
+    ImGui::SetCursorPos(ImVec2(116, 56));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
     ImGui::Text("%s", profile.username.c_str());
+    ImGui::PopStyleColor();
     ImGui::EndChild();
     ImGui::PopStyleColor();
 
@@ -1465,19 +1583,32 @@ void DrawProfileModal(ChatClient &client, const epyks::UserProfile &profile,
     ImGui::SetCursorPosX(20);
     ImGui::BeginGroup();
     ImGui::TextDisabled("ABOUT ME");
-    ImGui::PushTextWrapPos(380);
-    ImGui::Text("%s",
-                profile.bio.empty() ? "No bio set." : profile.bio.c_str());
+    ImGui::PushTextWrapPos(400);
+    ImGui::TextUnformatted(
+        profile.bio.empty() ? "No bio set." : profile.bio.c_str());
     ImGui::PopTextWrapPos();
     ImGui::EndGroup();
 
-    ImGui::SetCursorPos(ImVec2(20, 440));
-    if (ImGui::Button("Close", ImVec2(360, 40)))
+    // Close button
+    ImGui::SetCursorPos(ImVec2(20, 468));
+    if (ImGui::Button("Close", ImVec2(380, 40))) {
       *p_open = false;
+      ImGui::CloseCurrentPopup();
+    }
 
-    ImGui::End();
+    // Also close on Escape
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+      *p_open = false;
+      ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::EndPopup();
+  } else {
+    // Popup closed by clicking outside or similar — sync state
+    *p_open = false;
   }
 }
+
 
 std::string PickLocalFile() {
   char szFile[260] = {0};
@@ -1576,6 +1707,38 @@ static void DrawCallView(ChatClient &client) {
         ImGui::TextColored(ImVec4(0.85f, 0.35f, 0.35f, 1.0f), statusTxt);
       }
       ImGui::EndChild();
+
+      // Right-Click Context Menu (Voice Moderation / Local Audio)
+      if (!local && ImGui::BeginPopupContextItem(("vcctx_" + name).c_str())) {
+          ImGui::Text("@ %s", name.c_str());
+          ImGui::Separator();
+          
+          // Local settings (visual only for now, mapped later if needed)
+          static float localVol = 100.0f;
+          ImGui::Text("Local Volume (Coming Soon)");
+          ImGui::SliderFloat(("##vol_" + name).c_str(), &localVol, 0.0f, 200.0f, "%.0f%%");
+          
+          ImGui::Dummy(ImVec2(0, 5));
+          ImGui::Separator();
+          ImGui::Dummy(ImVec2(0, 5));
+
+          // Server-wide Moderation (Visible to all, but server rejects if not owner)
+          // We show them in red to indicate admin actions
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
+          if (ImGui::MenuItem("Server Mute")) {
+              client.SendMuteUser(client.currentVoiceServerId, name, true);
+          }
+          if (ImGui::MenuItem("Server Unmute")) {
+              client.SendMuteUser(client.currentVoiceServerId, name, false);
+          }
+          if (ImGui::MenuItem("Kick from VC")) {
+              client.SendKickUser(client.currentVoiceServerId, name);
+          }
+          ImGui::PopStyleColor();
+
+          ImGui::EndPopup();
+      }
+
       ImGui::PopID();
 
       count++;
@@ -2259,12 +2422,11 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
               continue; // Category header
 
             ImGui::SetCursorPosX(16);
-            std::string label = (channel.type == 0 ? "# " : "v ") +
-                                channel.name + "##CH_" +
-                                std::to_string(channel.id);
-            if (ImGui::Selectable(label.c_str(),
-                                  client.currentChannelId == channel.id, 0,
-                                  ImVec2(0, 32))) {
+            std::string label = (channel.type == 0 ? "# " : "~ ") + channel.name;
+            ImGui::PushStyleColor(ImGuiCol_Text, channel.type == 1 ? ImVec4(0.4f, 0.8f, 0.5f, 1.0f) : ImVec4(0.8f, 0.8f, 0.8f, 1.0f));
+            if (ImGui::Selectable((label + "##CH_" + std::to_string(channel.id)).c_str(),
+                                  false, 0, ImVec2(0, 32))) {
+              ImGui::PopStyleColor();
               client.currentChannelId = channel.id;
               if (channel.type == 0) { // Text
                 server.channelMessages[channel.id].clear();
@@ -2277,6 +2439,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                 client.showVoiceCallWindow = true;
               }
             }
+            ImGui::PopStyleColor();
           }
         };
 
@@ -2576,6 +2739,13 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
               }
             }
 
+            bool hasMention = (content.find("@" + client.username) != std::string::npos);
+            if (hasMention) {
+                ImDrawList* drawList = ImGui::GetWindowDrawList();
+                ImVec2 pos = ImGui::GetCursorScreenPos();
+                drawList->AddRectFilled(pos, ImVec2(pos.x + 4, pos.y + 40), ImColor(255, 255, 0, 200));
+            }
+
             std::string pfp = "";
             if (client.userProfileCache.count(user)) {
               pfp = client.userProfileCache[user].pfp_url;
@@ -2591,11 +2761,19 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             DrawAvatar(user, pfp, 40);
             ImGui::SameLine(64);
             ImGui::BeginGroup();
+            if (hasMention) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
             ImGui::TextColored(config.accentColor, "%s", user.c_str());
+            if (hasMention) ImGui::PopStyleColor();
             if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(0))
               client.RequestProfile(user);
             ImGui::SameLine();
             ImGui::TextDisabled("%s", timeStr.c_str());
+            
+            if (m.reply_to_id != 0) {
+              ImGui::SameLine();
+              ImGui::TextDisabled("[Replying to #%llu]", m.reply_to_id);
+            }
+
             // Check if content is a media link
             if (content.find("server-media://") == 0) {
               std::string mediaKey =
@@ -2641,7 +2819,32 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                 ImGui::TextDisabled("[Downloading image...]");
               }
             } else {
+              if (hasMention) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
               ImGui::TextWrapped("%s", content.c_str());
+              if (hasMention) ImGui::PopStyleColor();
+            }
+
+            // Context Menu for Edit/Delete
+            if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(1)) {
+              ImGui::OpenPopup(("MsgCtx##" + std::to_string(m.id)).c_str());
+            }
+
+            if (ImGui::BeginPopup(("MsgCtx##" + std::to_string(m.id)).c_str())) {
+              if (ImGui::MenuItem("Reply")) {
+                client.replyingToId = m.id;
+                client.replyingToUser = m.sender;
+              }
+              if (user == client.username) {
+                if (ImGui::MenuItem("Edit")) {
+                  client.editingMessageId = m.id;
+                  client.editingMessageContent = content;
+                  strncpy_s(inputBuf, 256, content.c_str(), _TRUNCATE);
+                }
+                if (ImGui::MenuItem("Delete")) {
+                  client.SendDeleteMessage(m.id, client.currentServerId, client.currentChannelId);
+                }
+              }
+              ImGui::EndPopup();
             }
             ImGui::EndGroup();
             if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(0)) {
@@ -2654,12 +2857,32 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
           if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
             ImGui::SetScrollHereY(1.0f);
           ImGui::EndChild();
-
           // [+] Media upload button + chat input
           float inputY = ImGui::GetWindowHeight() - 52;
+          
+          if (client.replyingToId != 0 || client.editingMessageId != 0) {
+              inputY -= 30;
+              ImGui::SetCursorPos(ImVec2(8, inputY - 5));
+              ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.16f, 0.18f, 1.0f));
+              ImGui::BeginChild("ReplyEditBar", ImVec2(ImGui::GetContentRegionAvail().x - 16, 30), true);
+              if (client.replyingToId != 0) {
+                  ImGui::Text("Replying to @%s", client.replyingToUser.c_str());
+              } else {
+                  ImGui::Text("Editing message...");
+              }
+              ImGui::SameLine(ImGui::GetWindowWidth() - 30);
+              if (ImGui::Button("X##closereply", ImVec2(20, 20))) {
+                  client.replyingToId = 0;
+                  client.editingMessageId = 0;
+                  inputBuf[0] = '\0';
+              }
+              ImGui::EndChild();
+              ImGui::PopStyleColor();
+          }
+
           ImGui::SetCursorPos(ImVec2(8, inputY));
           ImGui::PushStyleColor(ImGuiCol_Button,
-                                ImVec4(0.25f, 0.26f, 0.30f, 1.0f));
+                                 ImVec4(0.25f, 0.26f, 0.30f, 1.0f));
           ImGui::PushStyleColor(ImGuiCol_ButtonHovered, config.accentColor);
           ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
           if (ImGui::Button("+##mediabtn", ImVec2(36, 36))) {
@@ -2668,50 +2891,93 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             char szFile[260] = {0};
             ZeroMemory(&ofn, sizeof(ofn));
             ofn.lStructSize = sizeof(ofn);
-            ofn.hwndOwner = nullptr;
+            ofn.hwndOwner = NULL;
             ofn.lpstrFile = szFile;
             ofn.nMaxFile = sizeof(szFile);
-            ofn.lpstrFilter =
-                "Images\0*.jpg;*.jpeg;*.png;*.gif;*.webp\0All Files\0*.*\0";
+            ofn.lpstrFilter = "Images\0*.png;*.jpg;*.jpeg;*.bmp\0All\0*.*\0";
             ofn.nFilterIndex = 1;
-            ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-            if (GetOpenFileNameA(&ofn)) {
-              std::ifstream file(szFile, std::ios::binary);
-              if (file.is_open()) {
-                std::vector<uint8_t> imgData(
-                    std::istreambuf_iterator<char>(file), {});
-                client.SendMediaUpload(imgData);
+            ofn.lpstrFileTitle = NULL;
+            ofn.nMaxFileTitle = 0;
+            ofn.lpstrInitialDir = NULL;
+            ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+
+            if (GetOpenFileNameA(&ofn) == TRUE) {
+              std::string path = szFile;
+              std::ifstream f(path, std::ios::binary | std::ios::ate);
+              if (f.is_open()) {
+                size_t size = f.tellg();
+                f.seekg(0, std::ios::beg);
+                std::vector<uint8_t> buffer(size);
+                f.read((char *)buffer.data(), size);
+                f.close();
+                client.SendMediaUpload(buffer);
+                client.pendingMediaUploadUrl = "uploading";
               }
             }
           }
           ImGui::PopStyleVar();
           ImGui::PopStyleColor(2);
-          ImGui::SameLine(0, 6);
+
+          ImGui::SameLine();
           ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - 8);
-          if (!client.pendingMediaUploadUrl.empty() &&
-              client.pendingMediaUploadUrl != "uploading") {
-            // Automatically send the media URL as the message
-            client.SendServerMessage(client.currentServerId,
-                                     client.currentChannelId,
-                                     client.pendingMediaUploadUrl);
-            client.pendingMediaUploadUrl.clear();
-          }
           if (client.pendingMediaUploadUrl == "uploading") {
+            static char uploadingBuf[128] = "Uploading image...";
             ImGui::BeginDisabled();
-            char uploadingBuf[] = "Uploading...";
             ImGui::InputText("##channelinput", uploadingBuf,
                              sizeof(uploadingBuf),
                              ImGuiInputTextFlags_ReadOnly);
             ImGui::EndDisabled();
           } else {
             if (ImGui::InputText("##channelinput", inputBuf, 256,
-                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
-              client.SendServerMessage(client.currentServerId,
-                                       client.currentChannelId, inputBuf);
+                                 ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackAlways,
+                                 [](ImGuiInputTextCallbackData* data) {
+                                     ChatClient* cl = (ChatClient*)data->UserData;
+                                     std::string s = data->Buf;
+                                     size_t lastAt = s.find_last_of('@');
+                                     if (lastAt != std::string::npos && lastAt >= (size_t)data->CursorPos - 10) {
+                                         std::string query = s.substr(lastAt + 1, data->CursorPos - (lastAt + 1));
+                                         cl->mentionSuggestions.clear();
+                                         for (auto& m : cl->serverMembers[cl->currentServerId]) {
+                                             if (m.username.find(query) == 0) {
+                                                 cl->mentionSuggestions.push_back(m.username);
+                                             }
+                                         }
+                                         cl->showMentionPopup = !cl->mentionSuggestions.empty();
+                                         cl->mentionCursorPos = data->CursorPos;
+                                     } else {
+                                         cl->showMentionPopup = false;
+                                     }
+                                     return 0;
+                                 }, &client)) {
+              if (client.editingMessageId != 0) {
+                  client.SendEditMessage(client.editingMessageId, inputBuf, client.currentServerId, client.currentChannelId);
+                  client.editingMessageId = 0;
+              } else {
+                  client.SendServerMessage(client.currentServerId,
+                                           client.currentChannelId, inputBuf, client.replyingToId);
+                  client.replyingToId = 0;
+              }
               inputBuf[0] = '\0';
               ImGui::SetKeyboardFocusHere(-1);
             }
+            
+            if (client.showMentionPopup) {
+                ImGui::SetNextWindowPos(ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMin().y - (ImGui::GetTextLineHeightWithSpacing() * client.mentionSuggestions.size() + 20)));
+                if (ImGui::Begin("Mentions", nullptr, ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize)) {
+                    for (auto& sug : client.mentionSuggestions) {
+                        if (ImGui::Selectable(sug.c_str())) {
+                            std::string s = inputBuf;
+                            size_t lastAt = s.find_last_of('@');
+                            std::string next = s.substr(0, lastAt + 1) + sug + " ";
+                            strncpy_s(inputBuf, 256, next.c_str(), _TRUNCATE);
+                            client.showMentionPopup = false;
+                        }
+                    }
+                    ImGui::End();
+                }
+            }
           }
+
           ImGui::PopItemWidth();
 
         } else if (channelType == 1) { // Voice Channel
@@ -2760,15 +3026,57 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
         for (auto &m : dm.messages) {
           ImGui::BeginGroup();
           ImGui::SetCursorPosX(16);
-          bool isMe = m.find("You:") == 0;
-          std::string user = isMe ? client.username : currentDM;
-          std::string content = isMe ? m.substr(5) : m;
+          bool isMe = (m.sender == client.username);
+          std::string user = m.sender;
+          std::string content = m.content;
+
+          bool hasMention = (content.find("@" + client.username) != std::string::npos);
+          if (hasMention) {
+              ImDrawList* drawList = ImGui::GetWindowDrawList();
+              ImVec2 pos = ImGui::GetCursorScreenPos();
+              drawList->AddRectFilled(pos, ImVec2(pos.x + 4, pos.y + 40), ImColor(255, 255, 0, 200));
+          }
+
           DrawAvatar(user, "", 40);
           ImGui::SameLine(64);
           ImGui::BeginGroup();
+          if (hasMention) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
           ImGui::TextColored(isMe ? config.accentColor : ImVec4(1, 1, 1, 1),
                              "%s", user.c_str());
+          if (hasMention) ImGui::PopStyleColor();
+          
+          if (m.reply_to_id != 0) {
+              ImGui::SameLine();
+              ImGui::TextDisabled("[Replying to #%llu]", m.reply_to_id);
+          }
+
+          if (hasMention) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
           ImGui::TextWrapped("%s", content.c_str());
+          if (hasMention) ImGui::PopStyleColor();
+          
+          // Context Menu for Edit/Delete
+          if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(1)) {
+              ImGui::OpenPopup(("MsgCtx##" + std::to_string(m.id)).c_str());
+          }
+          
+          if (ImGui::BeginPopup(("MsgCtx##" + std::to_string(m.id)).c_str())) {
+              if (ImGui::MenuItem("Reply")) {
+                  client.replyingToId = m.id;
+                  client.replyingToUser = m.sender;
+              }
+              if (isMe) {
+                  if (ImGui::MenuItem("Edit")) {
+                      client.editingMessageId = m.id;
+                      client.editingMessageContent = m.content;
+                      strncpy_s(dmInputBuf, 256, m.content.c_str(), _TRUNCATE);
+                  }
+                  if (ImGui::MenuItem("Delete")) {
+                      client.SendDeleteMessage(m.id);
+                  }
+              }
+              ImGui::EndPopup();
+          }
+
           ImGui::EndGroup();
           ImGui::EndGroup();
           ImGui::Dummy(ImVec2(0, 8));
@@ -2777,12 +3085,30 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
           ImGui::SetScrollHereY(1.0f);
         ImGui::EndChild();
 
+        if (client.replyingToId != 0 || client.editingMessageId != 0) {
+            ImGui::SetCursorPos(ImVec2(16, ImGui::GetWindowHeight() - 78));
+            ImGui::BeginChild("DMReplyEditBar", ImVec2(ImGui::GetContentRegionAvail().x - 16, 26), true);
+            if (client.replyingToId != 0) ImGui::Text("Replying to @%s", client.replyingToUser.c_str());
+            else ImGui::Text("Editing DM...");
+            ImGui::SameLine(ImGui::GetWindowWidth() - 30);
+            if (ImGui::Button("X##closerdm", ImVec2(20, 20))) { client.replyingToId = 0; client.editingMessageId = 0; dmInputBuf[0] = '\0'; }
+            ImGui::EndChild();
+        }
+
         ImGui::SetCursorPos(ImVec2(16, ImGui::GetWindowHeight() - 48));
         ImGui::PushItemWidth(-16);
         if (ImGui::InputText("##dminput", dmInputBuf, 256,
                              ImGuiInputTextFlags_EnterReturnsTrue)) {
-          client.SendDM(currentDM, dmInputBuf);
+          if (client.editingMessageId != 0) {
+              client.SendEditMessage(client.editingMessageId, dmInputBuf);
+              client.editingMessageId = 0;
+          } else {
+              client.SendDM(currentDM, dmInputBuf);
+              // Note: client.SendDM currently doesn't support reply_to_id, 
+              // but we can add it easily if needed.
+          }
           dmInputBuf[0] = '\0';
+          client.replyingToId = 0;
           ImGui::SetKeyboardFocusHere(-1);
         }
         ImGui::PopItemWidth();
@@ -2930,6 +3256,52 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             }
             ImGui::PopStyleVar();
             ImGui::PopStyleColor(2);
+
+            ImGui::Dummy(ImVec2(0, 30));
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Danger Zone");
+            ImGui::Separator();
+            ImGui::Dummy(ImVec2(0, 10));
+            ImGui::TextWrapped("Once you delete your account, there is no going back. Please be certain.");
+            ImGui::Dummy(ImVec2(0, 10));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+            if (ImGui::Button("Delete Account", ImVec2(150, 35))) {
+              ImGui::OpenPopup("Delete Account Confirm");
+            }
+            ImGui::PopStyleColor(2);
+
+            // Setup modal rendering for Delete Account Confirm inside the settings window
+            ImGui::SetNextWindowSize(ImVec2(400, 220));
+            if (ImGui::BeginPopupModal("Delete Account Confirm", nullptr, ImGuiWindowFlags_NoResize)) {
+              ImGui::TextWrapped("Enter your password to confirm account deletion. This action cannot be undone.");
+              ImGui::Dummy(ImVec2(0, 10));
+              
+              static char delPasswordBuf[128] = "";
+              ImGui::SetNextItemWidth(360);
+              ImGui::InputTextWithHint("##delPass", "Password", delPasswordBuf, sizeof(delPasswordBuf), ImGuiInputTextFlags_Password);
+              
+              ImGui::Dummy(ImVec2(0, 20));
+              
+              ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+              if (ImGui::Button("Delete Account", ImVec2(200, 35))) {
+                  client.SendDeleteAccount(delPasswordBuf);
+                  ClearCredentials();
+                  showLogin = true;
+                  showSettings = false;
+                  ImGui::CloseCurrentPopup();
+                  // Nullify password so it doesn't linger
+                  memset(delPasswordBuf, 0, sizeof(delPasswordBuf));
+              }
+              ImGui::PopStyleColor();
+              
+              ImGui::SameLine();
+              if (ImGui::Button("Cancel", ImVec2(100, 35))) {
+                  ImGui::CloseCurrentPopup();
+                  memset(delPasswordBuf, 0, sizeof(delPasswordBuf));
+              }
+              ImGui::EndPopup();
+            }
+
           } else if (settingsTab == 1) {
             ImGui::Text("User Profile");
             ImGui::Separator();
@@ -3016,34 +3388,29 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             ImGui::PopItemWidth();
 
             ImGui::Dummy(ImVec2(0, 20));
+            ImGui::Text("AI Noise Cancellation");
+            ImGui::Separator();
+            ImGui::Dummy(ImVec2(0, 10));
+            
+            bool rnnoiseEnabled = client.audio->GetRNNoiseEnabled();
+            if (ImGui::Checkbox("Enable RNNoise (Removes background noise)", &rnnoiseEnabled)) {
+                client.audio->SetRNNoiseEnabled(rnnoiseEnabled);
+            }
+            ImGui::TextDisabled("Uses a trained neural network to filter out keyboard and fan noise.");
+
+            ImGui::Dummy(ImVec2(0, 20));
             ImGui::Text("Input Sensitivity");
             ImGui::Separator();
             ImGui::Dummy(ImVec2(0, 10));
 
-            bool vadAuto = client.audio->GetVadAuto();
-            if (ImGui::Checkbox("Automatically determine input sensitivity",
-                                &vadAuto)) {
-              client.audio->SetVadAuto(vadAuto);
-            }
-
-            ImGui::Dummy(ImVec2(0, 10));
             float currentLevel = client.audio->GetCurrentLevel() * 100.0f;
             float threshold = client.audio->GetVadThreshold() * 100.0f;
 
             float sliderWidth = 0.0f;
-            if (vadAuto) {
-              ImGui::BeginDisabled();
-              ImGui::SliderFloat("##threshold", &threshold, 0.0f, 10.0f,
-                                 "%.2f%%");
-              sliderWidth = ImGui::GetItemRectSize().x;
-              ImGui::EndDisabled();
-            } else {
-              if (ImGui::SliderFloat("##threshold", &threshold, 0.0f, 10.0f,
-                                     "%.2f%%")) {
+            if (ImGui::SliderFloat("##threshold", &threshold, 0.0f, 10.0f, "%.2f%%")) {
                 client.audio->SetVadThreshold(threshold / 100.0f);
-              }
-              sliderWidth = ImGui::GetItemRectSize().x;
             }
+            sliderWidth = ImGui::GetItemRectSize().x;
 
             // Render level indicator
             ImGui::Dummy(ImVec2(0, 5));
@@ -3054,6 +3421,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             ImGui::ProgressBar(currentLevel / 10.0f, ImVec2(sliderWidth, 15),
                                "");
             ImGui::PopStyleColor();
+            // Removed old RNNoise UI that was at bottom since it's moved up
           }
           ImGui::EndGroup();
           ImGui::EndChild();
@@ -3242,12 +3610,32 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             }
 
             ImGui::Dummy(ImVec2(0, 10));
-            for (int i = 0; i < (int)server.channels.size(); ++i) {
-              auto &ch = server.channels[i];
+            
+            // Sort channels by category
+            std::vector<Channel> sortedChannels;
+            for (auto &ch : server.channels) {
+                if (ch.type == 2) {
+                    sortedChannels.push_back(ch);
+                    for (auto &sub : server.channels) {
+                        if (sub.type != 2 && sub.category == ch.name) {
+                            sortedChannels.push_back(sub);
+                        }
+                    }
+                }
+            }
+            // Add uncategorized
+            for (auto &sub : server.channels) {
+                if (sub.type != 2 && sub.category.empty()) {
+                    sortedChannels.push_back(sub);
+                }
+            }
+
+            for (int i = 0; i < (int)sortedChannels.size(); ++i) {
+              auto &ch = sortedChannels[i];
               std::string icon =
                   (ch.type == 2)
                       ? "[Category]"
-                      : (ch.type == 1 ? "\xef\x80\xa6 " : "\xef\x8a\x92 ");
+                      : (ch.type == 1 ? "~ " : "# ");
               std::string chDisplayName = icon + " " + ch.name;
               if (ch.type != 2 && !ch.category.empty()) {
                 chDisplayName =
@@ -3260,12 +3648,18 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
               if (ImGui::Button(("Edit##" + std::to_string(ch.id)).c_str())) {
                 ImGui::OpenPopup(
                     ("EditDropdown##" + std::to_string(ch.id)).c_str());
-                strcpy_s(inlineChName, ch.name.c_str());
+                strcpy_s(inlineChName, sizeof(inlineChName), ch.name.c_str());
               }
               ImGui::SameLine();
               if (ImGui::Button(("Delete##" + std::to_string(ch.id)).c_str())) {
                 client.SendDeleteChannel(client.currentServerId, ch.id);
-                server.channels.erase(server.channels.begin() + i);
+                // Erase from original array
+                for (auto it = server.channels.begin(); it != server.channels.end(); ++it) {
+                    if (it->id == ch.id) {
+                        server.channels.erase(it);
+                        break;
+                    }
+                }
                 break;
               }
 

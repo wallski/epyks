@@ -12,6 +12,7 @@ struct ma_device;
 struct ma_context;
 struct OpusEncoder;
 struct OpusDecoder;
+struct DenoiseState; // RNNoise
 
 struct AudioDeviceInfo {
     std::string id;
@@ -55,11 +56,13 @@ public:
     void SetVadThreshold(float v) { m_vadThreshold = v; }
     float GetCurrentLevel() const { return m_currentLevel; }
 
+    // RNNoise AI noise cancellation
+    bool GetRNNoiseEnabled() const { return m_rnnoiseEnabled; }
+    void SetRNNoiseEnabled(bool enabled);
 
 private:
     // miniaudio callback
     static void DataCallback(ma_device* pDevice, void* pOutput, const void* pInput, unsigned int frameCount);
-
     void ProcessAudio(void* pOutput, const void* pInput, unsigned int frameCount);
 
 private:
@@ -68,6 +71,11 @@ private:
 
     OpusEncoder* m_encoder;
     OpusDecoder* m_decoder;
+
+    // RNNoise state — two instances for 2x 480-sample halves of our 960-sample frame
+    DenoiseState* m_rnnoise0 = nullptr;
+    DenoiseState* m_rnnoise1 = nullptr;
+    std::atomic<bool> m_rnnoiseEnabled{false};
 
     std::atomic<bool> m_isInitialized;
     std::atomic<bool> m_isVoiceActive;
@@ -82,7 +90,6 @@ private:
     std::atomic<float> m_currentLevel{0.0f};
     std::atomic<float> m_noiseFloor{0.02f};
 
-
     // Buffer for outgoing encoded packets
     std::mutex m_outMutex;
     std::queue<std::vector<uint8_t>> m_outQueue;
@@ -94,6 +101,7 @@ private:
     // Configuration constants
     static const int SAMPLE_RATE = 48000;
     static const int CHANNELS = 1;
-    static const int FRAME_SIZE = 960; // 20ms at 48kHz
+    static const int FRAME_SIZE = 960;    // 20ms at 48kHz
     static const int MAX_PACKET_SIZE = 4000;
+    static const int RNNOISE_FRAME = 480; // RNNoise requires 10ms frames at 48kHz
 };
