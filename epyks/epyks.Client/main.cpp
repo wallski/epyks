@@ -220,6 +220,7 @@ struct ServerChat {
   std::string serverName;
   std::vector<Channel> channels;
   std::map<int, std::vector<Message>> channelMessages;
+  std::string owner;
   int ID;
 };
 
@@ -271,6 +272,7 @@ public:
   std::string editingMessageContent;
   uint64_t replyingToId = 0;
   std::string replyingToUser;
+  std::string replyingToContent;
   bool showMentionPopup = false;
   std::vector<std::string> mentionSuggestions;
   int mentionCursorPos = -1;
@@ -734,23 +736,28 @@ public:
         while (std::getline(ss, token, ',')) {
           if (token.empty())
             continue;
-          size_t colon = token.find(':');
-          if (colon != std::string::npos) {
-            int id = std::stoi(token.substr(0, colon));
-            std::string name = token.substr(colon + 1);
-            servers[id].serverName = name;
-            servers[id].ID = id;
+          size_t colon1 = token.find(':');
+          size_t colon2 = token.rfind(':');
+          if (colon1 != std::string::npos && colon2 != std::string::npos && colon1 != colon2) {
+            int id = std::stoi(token.substr(0, colon1));
+            std::string name = token.substr(colon1 + 1, colon2 - colon1 - 1);
+            std::string owner = token.substr(colon2 + 1);
+            if (id != 0 && !name.empty()) {
+                servers[id].serverName = name;
+                servers[id].owner = owner;
+                servers[id].ID = id;
 
-            epyks::ChannelList req;
-            req.server_id = id;
-            auto reqBytes = req.Serialize();
-            epyks::Packet reqPkt;
-            reqPkt.type = epyks::PacketType::CHANNEL_LIST;
-            reqPkt.data = std::string(reqBytes.begin(), reqBytes.end());
-            auto data = reqPkt.Serialize();
-            uint32_t len = (uint32_t)data.size();
-            send(sock, (char *)&len, 4, 0);
-            send(sock, (char *)data.data(), len, 0);
+                epyks::ChannelList req;
+                req.server_id = id;
+                auto reqBytes = req.Serialize();
+                epyks::Packet reqPkt;
+                reqPkt.type = epyks::PacketType::CHANNEL_LIST;
+                reqPkt.data = std::string(reqBytes.begin(), reqBytes.end());
+                auto data = reqPkt.Serialize();
+                uint32_t len = (uint32_t)data.size();
+                send(sock, (char *)&len, 4, 0);
+                send(sock, (char *)data.data(), len, 0);
+            }
           }
         }
       } else if (packet.type == epyks::PacketType::CHANNEL_LIST) {
@@ -795,6 +802,31 @@ public:
         std::string who = packet.data;
         dmChats.erase(who);
         RequestFriendList();
+      } else if (packet.type == epyks::PacketType::KICK_USER) {
+          size_t sep = packet.data.find('|');
+          if (sep != std::string::npos) {
+              int sid = std::stoi(packet.data.substr(0, sep));
+              std::string rest = packet.data.substr(sep + 1);
+              size_t space = rest.find(' ');
+              std::string kickedUser = rest.substr(0, space);
+              if (kickedUser == username) {
+                  servers.erase(sid);
+                  if (currentServerId == sid) {
+                      currentServerId = -1;
+                      currentChannelId = -1;
+                  }
+              }
+          }
+      } else if (packet.type == epyks::PacketType::MY_DMS) {
+          std::stringstream ss(packet.data);
+          std::string token;
+          while (std::getline(ss, token, ',')) {
+              if (token.empty()) continue;
+              if (dmChats.find(token) == dmChats.end()) {
+                  dmChats[token] = DMChat();
+                  RequestProfile(token);
+              }
+          }
       } else if (packet.type == epyks::PacketType::PROFILE_DATA) {
         epyks::UserProfile profile;
         auto bytes =
@@ -872,6 +904,7 @@ public:
   void RequestDMHistory(const std::string &target) {
     if (!connected)
       return;
+    dmChats[target].messages.clear();
     epyks::Packet packet;
     packet.type = epyks::PacketType::HISTORY;
     packet.data = "DM:" + target;
@@ -2057,7 +2090,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
         }
 
         if (rememberMe && !client.sessionToken.empty()) {
-          SaveConfig(client.username, client.sessionToken, inDev, outDev);
+          SaveConfig(client.username, client.sessionToken, inDev, outDev, client.audio->GetRNNoiseEnabled());
         }
         client.RequestFriendList();
         memset(passwordBuf, 0, sizeof(passwordBuf));
@@ -2417,21 +2450,12 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
         ImGui::Separator();
 
         std::lock_guard<std::mutex> dmLock(client.friendsMutex);
-        for (auto &friend_ : client.friends) {
-          // Only show friends who have DM history or unread
-          bool hasDM = client.dmChats.count(friend_.username) &&
-                       !client.dmChats[friend_.username].messages.empty();
-          if (!hasDM && !friend_.hasUnread)
-            continue;
-          ImVec4 color = friend_.hasUnread ? ImVec4(1.0f, 0.8f, 0.2f, 1.0f)
-                                           : config.textColor;
-          ImGui::PushStyleColor(ImGuiCol_Text, color);
-          std::string label =
-              "  " + friend_.username + "##DM_" + friend_.username;
-          if (drawSelectable(label.c_str(), currentDM == friend_.username,
-                             ImVec2(208, 28))) {
-            currentDM = friend_.username;
-            friend_.hasUnread = false;
+        for (auto const& [name, chat] : client.dmChats) {
+          if (name == client.username) continue; // Don't show self in DMs
+          ImGui::PushStyleColor(ImGuiCol_Text, config.textColor);
+          std::string label = "  " + name + "##DM_" + name;
+          if (drawSelectable(label.c_str(), currentDM == name, ImVec2(208, 28))) {
+            currentDM = name;
             client.showVoiceCallWindow = false;
             client.RequestDMHistory(currentDM);
           }
@@ -2446,12 +2470,14 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.1f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.2f));
-        if (ImGui::Button("##serveropt", ImVec2(28, 28)))
-          showServerSettings = true;
-        ImVec2 gearPos = ImGui::GetItemRectMin();
-        gearPos.x += 14;
-        gearPos.y += 14;
-        DrawGearIcon(gearPos, 14, IM_COL32_WHITE);
+        if (server.owner == client.username) {
+            if (ImGui::Button("##serveropt", ImVec2(28, 28)))
+              showServerSettings = true;
+            ImVec2 gearPos = ImGui::GetItemRectMin();
+            gearPos.x += 14;
+            gearPos.y += 14;
+            DrawGearIcon(gearPos, 14, IM_COL32_WHITE);
+        }
         ImGui::PopStyleColor(3);
         ImGui::Separator();
 
@@ -2528,7 +2554,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
       ImGui::BeginGroup();
       ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 2);
       ImGui::Text("%s", client.username.c_str());
-      ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 1));
+      ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, -3));
       ImGui::SetWindowFontScale(0.85f);
       ImGui::TextDisabled("Online");
       ImGui::SetWindowFontScale(1.0f);
@@ -2544,6 +2570,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
       ImGui::SetCursorPos(summaryEnd);
 
       ImGui::SameLine(175);
+      ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2);
       ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
       ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.1f));
       ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.2f));
@@ -2801,11 +2828,17 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             if (client.userProfileCache.count(user)) {
               pfp = client.userProfileCache[user].pfp_url;
             } else {
-              for (auto &mi : client.serverMembers[client.currentServerId]) {
-                if (mi.username == user) {
-                  pfp = mi.pfp_url;
-                  break;
-                }
+              if (client.currentServerId != -1) {
+                  for (auto &mi : client.serverMembers[client.currentServerId]) {
+                    if (mi.username == user) {
+                      pfp = mi.pfp_url;
+                      break;
+                    }
+                  }
+              }
+              // If still no PFP and not pending, request it
+              if (pfp.empty()) {
+                  client.RequestProfile(user);
               }
             }
 
@@ -2916,7 +2949,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
               ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.16f, 0.18f, 1.0f));
               ImGui::BeginChild("ReplyEditBar", ImVec2(ImGui::GetContentRegionAvail().x - 16, 30), true);
               if (client.replyingToId != 0) {
-                  ImGui::Text("Replying to @%s", client.replyingToUser.c_str());
+                  ImGui::Text("Replying to @%s: %.20s...", client.replyingToUser.c_str(), client.replyingToContent.c_str());
               } else {
                   ImGui::Text("Editing message...");
               }
@@ -2986,16 +3019,32 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                                  [](ImGuiInputTextCallbackData* data) {
                                      ChatClient* cl = (ChatClient*)data->UserData;
                                      std::string s = data->Buf;
-                                     size_t lastAt = s.find_last_of('@');
-                                     if (lastAt != std::string::npos && lastAt >= (size_t)data->CursorPos - 10) {
-                                         std::string query = s.substr(lastAt + 1, data->CursorPos - (lastAt + 1));
-                                         cl->mentionSuggestions.clear();
-                                         for (auto& m : cl->serverMembers[cl->currentServerId]) {
-                                             if (m.username.find(query) == 0) {
-                                                 cl->mentionSuggestions.push_back(m.username);
-                                             }
-                                         }
-                                         cl->showMentionPopup = !cl->mentionSuggestions.empty();
+                                     size_t lastAt = s.find_last_of('@');                                      if (lastAt != std::string::npos && (size_t)data->CursorPos > lastAt) {
+                                          std::string query = s.substr(lastAt + 1, data->CursorPos - (lastAt + 1));
+                                          cl->mentionSuggestions.clear();
+                                          if (cl->currentServerId != -1) {
+                                              for (auto& m : cl->serverMembers[cl->currentServerId]) {
+                                                  if (m.username.find(query) == 0 && m.username != cl->username) {
+                                                      cl->mentionSuggestions.push_back(m.username);
+                                                  }
+                                              }
+                                          } else {
+                                              // DMs / Friends
+                                              for (auto& f : cl->friends) {
+                                                  if (f.username.find(query)  == 0) {
+                                                      cl->mentionSuggestions.push_back(f.username);
+                                                  }
+                                              }
+                                              for (auto& pair : cl->dmChats) {
+                                                  if (pair.first.find(query) == 0) {
+                                                      bool exists = false;
+                                                      for(auto& sug : cl->mentionSuggestions) if(sug == pair.first) exists = true;
+                                                      if(!exists) cl->mentionSuggestions.push_back(pair.first);
+                                                  }
+                                              }
+                                          }
+                                          cl->showMentionPopup = !cl->mentionSuggestions.empty();
+
                                          cl->mentionCursorPos = data->CursorPos;
                                      } else {
                                          cl->showMentionPopup = false;
