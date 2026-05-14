@@ -529,7 +529,10 @@ std::vector<std::string> Database::GetFriends(const std::string& user) {
     sqlite3_stmt* stmt;
 
     sqlite3_prepare_v2(db,
-        "SELECT user2 FROM friends WHERE user1=?",
+        "SELECT f1.user2 FROM friends f1 "
+        "WHERE f1.user1 = ? AND EXISTS ("
+        "  SELECT 1 FROM friends f2 WHERE f2.user1 = f1.user2 AND f2.user2 = f1.user1"
+        ")",
         -1, &stmt, nullptr);
 
     sqlite3_bind_text(stmt, 1, user.c_str(), -1, SQLITE_TRANSIENT);
@@ -546,13 +549,18 @@ bool Database::AreFriends(const std::string& u1, const std::string& u2) {
     std::lock_guard<std::recursive_mutex> lock(dbMutex);
     sqlite3_stmt* stmt;
     sqlite3_prepare_v2(db,
-        "SELECT 1 FROM friends WHERE user1=? AND user2=?",
+        "SELECT COUNT(*) FROM friends WHERE (user1=? AND user2=?) OR (user1=? AND user2=?)",
         -1, &stmt, nullptr);
 
     sqlite3_bind_text(stmt, 1, u1.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, u2.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, u2.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, u1.c_str(), -1, SQLITE_TRANSIENT);
 
-    bool ok = sqlite3_step(stmt) == SQLITE_ROW;
+    bool ok = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        ok = (sqlite3_column_int(stmt, 0) >= 2);
+    }
     sqlite3_finalize(stmt);
     return ok;
 }
@@ -979,3 +987,5 @@ std::vector<std::string> Database::GetDMContacts(const std::string& username) {
     }
     return contacts;
 }
+
+

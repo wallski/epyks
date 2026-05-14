@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Application
+    x:Class="epyks_winui.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:epyks_winui"
+    RequestedTheme="Dark">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- === EPYKS DISCORD-INSPIRED COLOR PALETTE === -->
+            <Color x:Key="EpyksBg">#1E1F22</Color>
+            <Color x:Key="EpyksSidebar">#2B2D31</Color>
+            <Color x:Key="EpyksChat">#313338</Color>
+            <Color x:Key="EpyksMemberBar">#232428</Color>
+            <Color x:Key="EpyksInput">#383A40</Color>
+            <Color x:Key="EpyksAccent">#5865F2</Color>
+            <Color x:Key="EpyksAccentHover">#4752C4</Color>
+            <Color x:Key="EpyksGreen">#23A55A</Color>
+            <Color x:Key="EpyksRed">#F23F43</Color>
+            <Color x:Key="EpyksTextPrimary">#DCDDDE</Color>
+            <Color x:Key="EpyksTextMuted">#949BA4</Color>
+            <Color x:Key="EpyksTextHeader">#F2F3F5</Color>
+            <Color x:Key="EpyksChannelHover">#35373C</Color>
+            <Color x:Key="EpyksChannelActive">#404249</Color>
+            <Color x:Key="EpyksServerRail">#1E1F22</Color>
+            <Color x:Key="EpyksDivider">#3F4147</Color>
+
+            <SolidColorBrush x:Key="EpyksBgBrush" Color="{StaticResource EpyksBg}" />
+            <SolidColorBrush x:Key="EpyksSidebarBrush" Color="{StaticResource EpyksSidebar}" />
+            <SolidColorBrush x:Key="EpyksChatBrush" Color="{StaticResource EpyksChat}" />
+            <SolidColorBrush x:Key="EpyksMemberBarBrush" Color="{StaticResource EpyksMemberBar}" />
+            <SolidColorBrush x:Key="EpyksInputBrush" Color="{StaticResource EpyksInput}" />
+            <SolidColorBrush x:Key="EpyksAccentBrush" Color="{StaticResource EpyksAccent}" />
+            <SolidColorBrush x:Key="EpyksGreenBrush" Color="{StaticResource EpyksGreen}" />
+            <SolidColorBrush x:Key="EpyksRedBrush" Color="{StaticResource EpyksRed}" />
+            <SolidColorBrush x:Key="EpyksTextPrimaryBrush" Color="{StaticResource EpyksTextPrimary}" />
+            <SolidColorBrush x:Key="EpyksTextMutedBrush" Color="{StaticResource EpyksTextMuted}" />
+            <SolidColorBrush x:Key="EpyksTextHeaderBrush" Color="{StaticResource EpyksTextHeader}" />
+            <SolidColorBrush x:Key="EpyksChannelHoverBrush" Color="{StaticResource EpyksChannelHover}" />
+            <SolidColorBrush x:Key="EpyksChannelActiveBrush" Color="{StaticResource EpyksChannelActive}" />
+            <SolidColorBrush x:Key="EpyksServerRailBrush" Color="{StaticResource EpyksServerRail}" />
+            <SolidColorBrush x:Key="EpyksDividerBrush" Color="{StaticResource EpyksDivider}" />
+
+            <!-- Override WinUI defaults to match our dark theme -->
+            <SolidColorBrush x:Key="ApplicationPageBackgroundThemeBrush" Color="{StaticResource EpyksChat}" />
+            <SolidColorBrush x:Key="TextControlBackground" Color="{StaticResource EpyksInput}" />
+            <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="{StaticResource EpyksInput}" />
+            <SolidColorBrush x:Key="TextControlForeground" Color="{StaticResource EpyksTextPrimary}" />
+
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

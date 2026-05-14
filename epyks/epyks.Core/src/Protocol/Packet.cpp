@@ -864,4 +864,42 @@ namespace epyks {
         return true;
     }
 
+    std::vector<uint8_t> RenameServer::Serialize() const {
+        std::vector<uint8_t> result(4);
+        std::memcpy(result.data(), &server_id, 4);
+        uint32_t len = (uint32_t)new_name.size();
+        result.resize(8);
+        std::memcpy(result.data() + 4, &len, 4);
+        result.insert(result.end(), new_name.begin(), new_name.end());
+        return result;
+    }
+
+    bool RenameServer::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 8) return false;
+        std::memcpy(&server_id, bytes.data(), 4);
+        uint32_t len;
+        std::memcpy(&len, bytes.data() + 4, 4);
+        if (bytes.size() != 8 + len) return false;
+        new_name.assign(bytes.begin() + 8, bytes.end());
+        return true;
+    }
+
+    std::vector<uint8_t> GetProfile::Serialize() const {
+        std::vector<uint8_t> result;
+        uint32_t len = (uint32_t)username.size();
+        result.resize(4);
+        std::memcpy(result.data(), &len, 4);
+        result.insert(result.end(), username.begin(), username.end());
+        return result;
+    }
+
+    bool GetProfile::Deserialize(const std::vector<uint8_t>& bytes) {
+        if (bytes.size() < 4) return false;
+        uint32_t len;
+        std::memcpy(&len, bytes.data(), 4);
+        if (bytes.size() != 4 + len) return false;
+        username.assign(bytes.begin() + 4, bytes.end());
+        return true;
+    }
+
 } // namespace epyks

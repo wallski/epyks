@@ -1,13 +1,13 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.14.36811.4
+# Visual Studio Version 18
+VisualStudioVersion = 18.6.11806.211
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "epyks.Core", "epyks.Core\epyks.Core.vcxproj", "{F40B6E96-E98B-42D0-880A-2C0C9D0DAD6A}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "epyks.Server", "epyks.Server\epyks.Server.vcxproj", "{FC10DEED-1944-435C-A9D3-FCFAE44F4FD5}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "epyks.Client", "epyks.Client\epyks.Client.vcxproj", "{6D1EFD61-9B4E-416D-9075-68FCDE6E2EEB}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "epyks.winui", "epyks.winui\epyks.winui.vcxproj", "{A319C3D0-F826-4204-A3C3-ADC6244B1AAF}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -33,14 +33,18 @@ Global
 		{FC10DEED-1944-435C-A9D3-FCFAE44F4FD5}.Release|x64.Build.0 = Release|x64
 		{FC10DEED-1944-435C-A9D3-FCFAE44F4FD5}.Release|x86.ActiveCfg = Release|Win32
 		{FC10DEED-1944-435C-A9D3-FCFAE44F4FD5}.Release|x86.Build.0 = Release|Win32
-		{6D1EFD61-9B4E-416D-9075-68FCDE6E2EEB}.Debug|x64.ActiveCfg = Debug|x64
-		{6D1EFD61-9B4E-416D-9075-68FCDE6E2EEB}.Debug|x64.Build.0 = Debug|x64
-		{6D1EFD61-9B4E-416D-9075-68FCDE6E2EEB}.Debug|x86.ActiveCfg = Debug|Win32
-		{6D1EFD61-9B4E-416D-9075-68FCDE6E2EEB}.Debug|x86.Build.0 = Debug|Win32
-		{6D1EFD61-9B4E-416D-9075-68FCDE6E2EEB}.Release|x64.ActiveCfg = Release|x64
-		{6D1EFD61-9B4E-416D-9075-68FCDE6E2EEB}.Release|x64.Build.0 = Release|x64
-		{6D1EFD61-9B4E-416D-9075-68FCDE6E2EEB}.Release|x86.ActiveCfg = Release|Win32
-		{6D1EFD61-9B4E-416D-9075-68FCDE6E2EEB}.Release|x86.Build.0 = Release|Win32
+		{A319C3D0-F826-4204-A3C3-ADC6244B1AAF}.Debug|x64.ActiveCfg = Debug|x64
+		{A319C3D0-F826-4204-A3C3-ADC6244B1AAF}.Debug|x64.Build.0 = Debug|x64
+		{A319C3D0-F826-4204-A3C3-ADC6244B1AAF}.Debug|x64.Deploy.0 = Debug|x64
+		{A319C3D0-F826-4204-A3C3-ADC6244B1AAF}.Debug|x86.ActiveCfg = Debug|Win32
+		{A319C3D0-F826-4204-A3C3-ADC6244B1AAF}.Debug|x86.Build.0 = Debug|Win32
+		{A319C3D0-F826-4204-A3C3-ADC6244B1AAF}.Debug|x86.Deploy.0 = Debug|Win32
+		{A319C3D0-F826-4204-A3C3-ADC6244B1AAF}.Release|x64.ActiveCfg = Release|x64
+		{A319C3D0-F826-4204-A3C3-ADC6244B1AAF}.Release|x64.Build.0 = Release|x64
+		{A319C3D0-F826-4204-A3C3-ADC6244B1AAF}.Release|x64.Deploy.0 = Release|x64
+		{A319C3D0-F826-4204-A3C3-ADC6244B1AAF}.Release|x86.ActiveCfg = Release|Win32
+		{A319C3D0-F826-4204-A3C3-ADC6244B1AAF}.Release|x86.Build.0 = Release|Win32
+		{A319C3D0-F826-4204-A3C3-ADC6244B1AAF}.Release|x86.Deploy.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

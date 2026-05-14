@@ -43,7 +43,6 @@ void LogToFile(const std::string &message) {
 }
 #include "Database.h"
 #include "Protocol/Packet.h"
-#include "ServerGUI.h"
 #include <algorithm>
 #include <atomic>
 #include <filesystem>
@@ -51,6 +50,7 @@ void LogToFile(const std::string &message) {
 #include <string>
 #include <thread>
 #include <vector>
+#include <unordered_map>
 
 struct Client {
   SOCKET socket = INVALID_SOCKET;
@@ -74,15 +74,21 @@ class ChatServer {
   std::vector<Client> clients;
   std::mutex clientsMutex;
   uint64_t nextUserId = 0;
-  ServerGUI *gui = nullptr;
   Database *db = nullptr;
   int port = 9001;
+
+
+  // New optimized lookup structures
+  std::unordered_map<std::string, SOCKET> usernameToSocket;
+  std::unordered_map<int, std::vector<SOCKET>> serverOnlineClients; // serverId -> list of sockets
+  std::unordered_map<int, std::vector<SOCKET>> voiceOnlineClients;  // channelId -> list of sockets
+  std::mutex mapsMutex;
+
 
   SOCKET udpSocket = INVALID_SOCKET;
   std::thread udpThread;
 
 public:
-  void SetGUI(ServerGUI *g) { gui = g; }
   void SetDatabase(Database *d) { db = d; }
 
   bool Start(int port) {
@@ -130,16 +136,12 @@ public:
       int optUdp = 1;
       setsockopt(udpSocket, SOL_SOCKET, SO_REUSEADDR, (char *)&optUdp,
                  sizeof(optUdp));
-      if (bind(udpSocket, (sockaddr *)&serverAddr, sizeof(serverAddr)) ==
-          SOCKET_ERROR) {
-        if (gui)
-          gui->AddLog("[Error] Failed to bind UDP port " +
-                      std::to_string(port));
+      if (bind(udpSocket, (sockaddr *)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        printf("[Error] Failed to bind UDP port %d\n", port);
         closesocket(udpSocket);
         udpSocket = INVALID_SOCKET;
       } else {
-        if (gui)
-          gui->AddLog("UDP Server listening on port " + std::to_string(port));
+        printf("UDP Server listening on port %d\n", port);
         udpThread = std::thread(&ChatServer::UdpLoop, this);
       }
     }
@@ -188,9 +190,7 @@ public:
           accept(listenSocket, (sockaddr *)&clientAddr, &addrLen);
 
       if (clientSocket == INVALID_SOCKET) {
-        if (accepting && gui)
-          gui->AddLog("[Error] Accept failed");
-        else if (accepting)
+        if (accepting)
           printf("[Error] Accept failed\n");
         continue;
       }
@@ -199,10 +199,7 @@ public:
       inet_ntop(AF_INET, &clientAddr.sin_addr, ip, INET_ADDRSTRLEN);
       std::cout << "[System] New connection accepted" << std::endl;
       LogToFile("New connection accepted from client.");
-      if (gui)
-        gui->AddLog("Connection from " + std::string(ip));
-      else
-        printf("Connection from %s\n", ip);
+      printf("Connection from %s\n", ip);
 
       {
         std::lock_guard<std::mutex> lock(clientsMutex);
@@ -215,6 +212,38 @@ public:
 
       threads.emplace_back(&ChatServer::HandleClient, this, clientSocket);
     }
+  }
+
+  void AddOnlineClient(const std::string& username, SOCKET sock) {
+    std::lock_guard<std::mutex> lock(mapsMutex);
+    usernameToSocket[username] = sock;
+  }
+
+  void RemoveOnlineClient(const std::string& username, SOCKET sock) {
+    std::lock_guard<std::mutex> lock(mapsMutex);
+    if (!username.empty()) {
+        usernameToSocket.erase(username);
+    }
+    // Remove from all server maps
+    for (auto& pair : serverOnlineClients) {
+        auto& list = pair.second;
+        list.erase(std::remove(list.begin(), list.end(), sock), list.end());
+    }
+    // Remove from all voice maps
+    for (auto& pair : voiceOnlineClients) {
+        auto& list = pair.second;
+        list.erase(std::remove(list.begin(), list.end(), sock), list.end());
+    }
+  }
+
+  void AddToServerMap(int serverId, SOCKET sock) {
+    std::lock_guard<std::mutex> lock(mapsMutex);
+    serverOnlineClients[serverId].push_back(sock);
+  }
+
+  void AddToVoiceMap(int channelId, SOCKET sock) {
+    std::lock_guard<std::mutex> lock(mapsMutex);
+    voiceOnlineClients[channelId].push_back(sock);
   }
 
   void UdpLoop() {
@@ -245,16 +274,21 @@ public:
           }
 
           if (senderVerified) {
-            for (auto &c : clients) {
-              if (c.authenticated && c.hasUdpAddr &&
-                  c.username != pkt.username &&
-                  c.currentVoiceServerId == pkt.server_id &&
-                  c.currentVoiceChannelId == pkt.channel_id) {
-                sendto(udpSocket, buffer, bytes, 0, (sockaddr *)&c.udpAddr,
-                       sizeof(c.udpAddr));
-              }
+            std::lock_guard<std::mutex> mLock(mapsMutex);
+            auto it = voiceOnlineClients.find(pkt.channel_id);
+            if (it != voiceOnlineClients.end()) {
+                for (SOCKET targetSock : it->second) {
+                    // Find the client with this socket to get their UDP addr
+                    for (auto &c : clients) {
+                        if (c.socket == targetSock && c.hasUdpAddr && c.username != pkt.username) {
+                            sendto(udpSocket, buffer, bytes, 0, (sockaddr *)&c.udpAddr, sizeof(c.udpAddr));
+                            break;
+                        }
+                    }
+                }
             }
           }
+
         }
       }
     }
@@ -268,7 +302,7 @@ public:
     while (running && !authenticated) {
       epyks::Packet packet;
       if (!ReceivePacket(sock, packet)) {
-        RemoveClient(sock);
+        RemoveClient(sock, "");
         return;
       }
 
@@ -288,10 +322,11 @@ public:
             resp.success = false;
             resp.error = "Password must be at least 4 characters";
           } else {
-            db->CreateAccountSecure(req.username, req.password);
+            std::string lowerUser = req.username;
+            for (auto &c : lowerUser) c = std::tolower(c);
+            db->CreateAccountSecure(lowerUser, req.password);
             resp.success = true;
-            if (gui)
-              gui->AddLog("[Auth] Account created: " + req.username);
+            
             LogToFile("[Auth] Account created: " + req.username);
           }
           auto respBytes = resp.Serialize();
@@ -308,14 +343,15 @@ public:
           epyks::LoginResponse resp;
           if (db->ValidateLoginSecure(req.username, req.password)) {
             authenticated = true;
-            username = req.username;
+            std::string lowerUser = req.username;
+            for (auto &c : lowerUser) c = std::tolower(c);
+            username = lowerUser;
             resp.success = true;
 
             sessionToken = db->GenerateSalt() + db->GenerateSalt();
             db->SaveSessionToken(username, sessionToken);
             resp.session_token = sessionToken;
-            if (gui)
-              gui->AddLog("[Auth] Login success: " + req.username);
+            
             LogToFile("[Auth] Login success: " + req.username);
 
             // Send pending friend requests to the newly logged-in user
@@ -323,7 +359,7 @@ public:
             for (const auto& sender : pendingRequests) {
               epyks::Packet notify;
               notify.type = epyks::PacketType::FRIEND_REQUEST;
-              notify.data = sender + " wants to add you as friend";
+              notify.data = sender;
               SendTo(sock, notify);
             }
             // Send DM contacts
@@ -339,8 +375,7 @@ public:
           } else {
             resp.success = false;
             resp.error = "Invalid username or password";
-            if (gui)
-              gui->AddLog("[Auth] Login failed: " + req.username);
+            
             LogToFile("[Auth] Login failed: " + req.username);
           }
           auto respBytes = resp.Serialize();
@@ -363,8 +398,7 @@ public:
             sessionToken = db->GenerateSalt() + db->GenerateSalt();
             db->SaveSessionToken(username, sessionToken);
             resp.session_token = sessionToken;
-            if (gui)
-              gui->AddLog("[Auth] Token login success: " + req.username);
+            
             LogToFile("[Auth] Token login success: " + req.username);
 
             // Send pending friend requests to the newly logged-in user
@@ -372,7 +406,7 @@ public:
             for (const auto& sender : pendingRequests) {
               epyks::Packet notify;
               notify.type = epyks::PacketType::FRIEND_REQUEST;
-              notify.data = sender + " wants to add you as friend";
+              notify.data = sender;
               SendTo(sock, notify);
             }
             // Send DM contacts
@@ -388,8 +422,7 @@ public:
           } else {
             resp.success = false;
             resp.error = "Session expired";
-            if (gui)
-              gui->AddLog("[Auth] Token login failed: " + req.username);
+            
             LogToFile("[Auth] Token login failed: " + req.username);
           }
           auto respBytes = resp.Serialize();
@@ -401,42 +434,54 @@ public:
       }
     }
 
-    {
-      std::lock_guard<std::mutex> lock(clientsMutex);
-      for (auto &c : clients) {
-        if (c.socket == sock) {
-          c.username = username;
-          c.hasUsername = true;
-          c.authenticated = true;
-          break;
+    if (authenticated) {
+      {
+        std::lock_guard<std::mutex> lock(clientsMutex);
+        for (auto &c : clients) {
+          if (c.socket == sock) {
+            c.username = username;
+            c.hasUsername = true;
+            c.authenticated = true;
+            break;
+          }
         }
       }
-    }
-
-    if (gui)
-      gui->AddLog("[" + username + "] logged in");
-    LogToFile("[" + username + "] logged in");
-
-    if (db) {
-      auto messages = db->GetRecentMessages(100);
-      for (auto &msg : messages) {
-        epyks::Packet hist;
-        hist.type = epyks::PacketType::HISTORY;
-        hist.data = "[" + msg.username + "]: " + msg.message;
-        hist.timestamp = msg.timestamp;
-        SendTo(sock, hist);
+      AddOnlineClient(username, sock);
+      if (db) {
+        auto servers = db->GetUserServers(username);
+        for (auto &s : servers) {
+          AddToServerMap(std::get<0>(s), sock);
+        }
       }
+
+      
+      std::cout << "[" << username << "] logged in" << std::endl;
+      LogToFile("[" + username + "] logged in");
+
+      // Send pending friend requests to the newly logged-in user
+      if (db) {
+        auto pending = db->GetPendingFriendRequests(username);
+        for (auto &from : pending) {
+          epyks::Packet notify;
+          notify.type = epyks::PacketType::FRIEND_REQUEST;
+          notify.data = from;
+          SendTo(sock, notify);
+        }
+      }
+
+      epyks::Packet joinMsg;
+      joinMsg.type = epyks::PacketType::JOIN_LEAVE;
+      joinMsg.data = username + " joined the chat";
+      Broadcast(joinMsg, sock);
+      BroadcastPresence(username, true);
     }
 
-    epyks::Packet joinMsg;
-    joinMsg.type = epyks::PacketType::JOIN_LEAVE;
-    joinMsg.data = username + " joined the chat";
-    Broadcast(joinMsg, sock);
-
-    while (running) {
+    while (running && authenticated) {
       epyks::Packet packet;
-      if (!ReceivePacket(sock, packet))
+      if (!ReceivePacket(sock, packet)) {
         break;
+      }
+
 
       if (packet.type == epyks::PacketType::HISTORY) {
         try {
@@ -445,9 +490,7 @@ public:
             std::string sidStr = packet.data.substr(0, sep);
             std::string cidStr = packet.data.substr(sep + 1);
             if (sidStr.empty() || cidStr.empty()) {
-              if (gui)
-                gui->AddLog("[Error] Malformed history request: " +
-                            packet.data);
+              
             } else {
               int serverId = std::stoi(sidStr);
               int channelId = std::stoi(cidStr);
@@ -496,13 +539,10 @@ public:
             }
           }
         } catch (const std::exception &e) {
-          if (gui)
-            gui->AddLog("[Error] History request error: " +
-                        std::string(e.what()));
+            LogToFile("[Exception] History error: " + std::string(e.what()));
         }
       } else if (packet.type == epyks::PacketType::CHAT_MESSAGE) {
-        if (gui)
-          gui->AddLog("[" + username + "]: " + packet.data);
+        
         if (db)
           db->SaveMessage(username, packet.data, packet.timestamp);
 
@@ -537,12 +577,10 @@ public:
             if (targetOnline) {
               epyks::Packet notify;
               notify.type = epyks::PacketType::FRIEND_REQUEST;
-              notify.data = username + " wants to add you as friend";
+              notify.data = username;
               SendTo(targetSock, notify);
             }
-            if (gui)
-              gui->AddLog("[" + username + "] sent friend request to [" +
-                          req.target_username + "]");
+            
           }
         }
       } else if (packet.type == epyks::PacketType::FRIEND_RESPONSE) {
@@ -570,9 +608,7 @@ public:
               }
             }
 
-            if (gui)
-              gui->AddLog("[" + username + "] and [" + resp.target_username +
-                          "] are now friends");
+            
           }
         }
       } else if (packet.type == epyks::PacketType::UNFRIEND) {
@@ -598,9 +634,7 @@ public:
               break;
             }
           }
-          if (gui)
-            gui->AddLog("[" + username + "] unfriended [" +
-                        req.target_username + "]");
+          
         }
       } else if (packet.type == epyks::PacketType::PRIVATE_MESSAGE) {
         epyks::PrivateMessage pm;
@@ -632,9 +666,7 @@ public:
               }
             }
 
-            if (gui)
-              gui->AddLog("[DM][" + username + " -> " + pm.target_username +
-                          "]: " + pm.content);
+            
           } else {
             epyks::Packet reject;
             reject.type = epyks::PacketType::PRIVATE_MESSAGE;
@@ -675,13 +707,9 @@ public:
             notify.data =
                 "Server '" + req.server_name + "' created successfully";
             SendTo(sock, notify);
-            if (gui)
-              gui->AddLog("[" + username + "] created server [" +
-                          req.server_name + "]");
+            
           } else {
-            if (gui)
-              gui->AddLog("[DEBUG] CreateServer failed - name: " +
-                          req.server_name + " owner: " + username);
+            
             epyks::Packet notify;
             notify.type = epyks::PacketType::CREATE_SERVER;
             notify.data = "Failed to create server '" + req.server_name + "'";
@@ -702,8 +730,8 @@ public:
             notify.type = epyks::PacketType::JOIN_SERVER;
             notify.data = std::string(respBytes.begin(), respBytes.end());
             SendTo(sock, notify);
-            if (gui)
-              gui->AddLog("[" + username + "] joined the server");
+            AddToServerMap(req.server_id, sock);
+            
           } else {
             epyks::Packet notify;
             notify.type = epyks::PacketType::JOIN_SERVER;
@@ -721,9 +749,7 @@ public:
             if (isOwner) {
               auto members = db->GetServerMembers(req.server_id);
               db->DeleteServer(req.server_id);
-              if (gui)
-                gui->AddLog("Server [" + std::to_string(req.server_id) +
-                            "] deleted because owner left");
+                
 
               std::lock_guard<std::mutex> lock(clientsMutex);
               for (const auto &member : members) {
@@ -741,17 +767,14 @@ public:
               auto members = db->GetServerMembers(req.server_id);
               if (members.empty()) {
                 db->DeleteServer(req.server_id);
-                if (gui)
-                  gui->AddLog("Server [" + std::to_string(req.server_id) +
-                              "] deleted because it became empty");
+                  
               }
             }
             epyks::Packet notify;
             notify.type = epyks::PacketType::LEAVE_SERVER;
             notify.data = std::to_string(req.server_id);
             SendTo(sock, notify);
-            if (gui)
-              gui->AddLog("[" + username + "] left the server");
+            
           } else {
             epyks::Packet notify;
             notify.type = epyks::PacketType::LEAVE_SERVER;
@@ -797,17 +820,14 @@ public:
           }
           auto forwardBytes = forward.Serialize();
 
-          std::lock_guard<std::mutex> lock(clientsMutex);
-          for (const auto &member : members) {
-            for (auto &c : clients) {
-              if (c.username == member.first) {
+          std::lock_guard<std::mutex> mapLock(mapsMutex);
+          auto it = serverOnlineClients.find(req.server_id);
+          if (it != serverOnlineClients.end()) {
+            for (SOCKET targetSock : it->second) {
                 epyks::Packet notify;
                 notify.type = epyks::PacketType::SERVER_MESSAGE;
-                notify.data =
-                    std::string(forwardBytes.begin(), forwardBytes.end());
-                SendTo(c.socket, notify);
-                break;
-              }
+                notify.data = std::string(forwardBytes.begin(), forwardBytes.end());
+                SendTo(targetSock, notify);
             }
           }
         }
@@ -815,34 +835,29 @@ public:
         epyks::EditMessage req;
         auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
         if (req.Deserialize(bytes) && db) {
-          if (db->EditMessage(req.message_id, req.new_content)) {
-            // Broadcast the edit to everyone in the server (if it's a server message)
-            if (req.server_id != -1) {
-              auto members = db->GetServerMembers(req.server_id);
-              std::lock_guard<std::mutex> lock(clientsMutex);
-              for (const auto &member : members) {
-                for (auto &c : clients) {
-                  if (c.username == member.first) {
+          auto participants = db->GetMessageParticipants(req.message_id);
+          if (participants.first == username) {
+            if (db->EditMessage(req.message_id, req.new_content)) {
+              // Broadcast the edit to everyone in the server (if it's a server message)
+              if (req.server_id != -1) {
+                std::lock_guard<std::mutex> mapLock(mapsMutex);
+                auto it = serverOnlineClients.find(req.server_id);
+                if (it != serverOnlineClients.end()) {
+                  for (SOCKET target : it->second) {
                     epyks::Packet notify;
                     notify.type = epyks::PacketType::EDIT_MESSAGE;
                     notify.data = std::string(bytes.begin(), bytes.end());
-                    SendTo(c.socket, notify);
-                    break;
+                    SendTo(target, notify);
                   }
                 }
-              }
-            } else {
+              } else {
                 // If it's a private message, broadcast to both participants
-                auto participants = db->GetMessageParticipants(req.message_id);
-                std::lock_guard<std::mutex> lock(clientsMutex);
-                for (auto &c : clients) {
-                  if (c.username == participants.first || c.username == participants.second) {
-                    epyks::Packet notify;
-                    notify.type = epyks::PacketType::EDIT_MESSAGE;
-                    notify.data = std::string(bytes.begin(), bytes.end());
-                    SendTo(c.socket, notify);
-                  }
-                }
+                std::lock_guard<std::mutex> mapLock(mapsMutex);
+                if (usernameToSocket.count(participants.first))
+                  SendTo(usernameToSocket[participants.first], packet);
+                if (!participants.second.empty() && usernameToSocket.count(participants.second))
+                  SendTo(usernameToSocket[participants.second], packet);
+              }
             }
           }
         }
@@ -850,33 +865,28 @@ public:
         epyks::DeleteMessage req;
         auto bytes = std::vector<uint8_t>(packet.data.begin(), packet.data.end());
         if (req.Deserialize(bytes) && db) {
-          if (db->DeleteMessage(req.message_id)) {
-            if (req.server_id != -1) {
-              auto members = db->GetServerMembers(req.server_id);
-              std::lock_guard<std::mutex> lock(clientsMutex);
-              for (const auto &member : members) {
-                for (auto &c : clients) {
-                  if (c.username == member.first) {
+          auto participants = db->GetMessageParticipants(req.message_id);
+          if (participants.first == username) {
+            if (db->DeleteMessage(req.message_id)) {
+              if (req.server_id != -1) {
+                std::lock_guard<std::mutex> mapLock(mapsMutex);
+                auto it = serverOnlineClients.find(req.server_id);
+                if (it != serverOnlineClients.end()) {
+                  for (SOCKET target : it->second) {
                     epyks::Packet notify;
                     notify.type = epyks::PacketType::DELETE_MESSAGE;
                     notify.data = std::string(bytes.begin(), bytes.end());
-                    SendTo(c.socket, notify);
-                    break;
+                    SendTo(target, notify);
                   }
                 }
-              }
-            } else {
+              } else {
                 // If it's a private message, broadcast to both participants
-                auto participants = db->GetMessageParticipants(req.message_id);
-                std::lock_guard<std::mutex> lock(clientsMutex);
-                for (auto &c : clients) {
-                  if (c.username == participants.first || c.username == participants.second) {
-                    epyks::Packet notify;
-                    notify.type = epyks::PacketType::DELETE_MESSAGE;
-                    notify.data = std::string(bytes.begin(), bytes.end());
-                    SendTo(c.socket, notify);
-                  }
-                }
+                std::lock_guard<std::mutex> mapLock(mapsMutex);
+                if (usernameToSocket.count(participants.first))
+                  SendTo(usernameToSocket[participants.first], packet);
+                if (!participants.second.empty() && usernameToSocket.count(participants.second))
+                  SendTo(usernameToSocket[participants.second], packet);
+              }
             }
           }
         }
@@ -886,8 +896,7 @@ public:
         if (req.Deserialize(bytes) && db) {
           if (db->ValidateLoginSecure(username, req.password)) {
             if (db->DeleteAccount(username)) {
-              if (gui)
-                gui->AddLog("[Auth] Account hard-deleted: " + username);
+              
               
               // Disconnect the user
               std::lock_guard<std::mutex> lock(clientsMutex);
@@ -968,8 +977,7 @@ public:
 
             if (db) {
               auto info = db->GetProfile(username);
-              db->UpdateProfile(username, info.bio,
-                                "server://" + username + ".png");
+              db->UpdateProfile(username, info.bio, "server://" + username + ".png");
               epyks::UserProfile profile;
               profile.username = username;
               profile.bio = info.bio;
@@ -980,9 +988,7 @@ public:
               notify.data = std::string(pBytes.begin(), pBytes.end());
               Broadcast(notify, -1);
             }
-            if (gui)
-              gui->AddLog("[" + username + "] uploaded a new PFP (" +
-                          std::to_string(req.image_data.size()) + " bytes)");
+            LogToFile("User [" + username + "] uploaded profile picture (" + std::to_string(req.image_data.size()) + " bytes)");
           }
         }
       } else if (packet.type == epyks::PacketType::PFP_REQUEST) {
@@ -1037,9 +1043,7 @@ public:
             pkg.data = std::string(outBuf.begin(), outBuf.end());
             SendTo(sock, pkg);
 
-            if (gui)
-              gui->AddLog("[" + username + "] uploaded media (" +
-                          std::to_string(req.media_data.size()) + " bytes) -> " + mediaKey);
+            LogToFile("User [" + username + "] uploaded media (" + std::to_string(req.media_data.size()) + " bytes) -> " + mediaKey);
           }
         }
       } else if (packet.type == epyks::PacketType::MEDIA_REQUEST) {
@@ -1132,49 +1136,37 @@ public:
           if (sep != std::string::npos && db) {
             int serverId = std::stoi(packet.data.substr(0, sep));
             std::string newName = packet.data.substr(sep + 1);
-            if (gui)
-              gui->AddLog("[DEBUG] User [" + username +
-                          "] requesting rename for server [" +
-                          std::to_string(serverId) + "] to [" + newName + "]");
+              
+            LogToFile("User [" + username + "] requesting rename for server [" + std::to_string(serverId) + "] to [" + newName + "]");
             if (db->IsServerOwner(username, serverId)) {
               if (db->UpdateServerName(serverId, newName)) {
                 epyks::Packet notify;
                 notify.type = epyks::PacketType::RENAME_SERVER;
                 notify.data = "Server renamed successfully";
                 SendTo(sock, notify);
-                if (gui)
-                  gui->AddLog("[SUCCESS] Server [" + std::to_string(serverId) +
-                              "] renamed to [" + newName + "]");
+                  
               } else {
-                if (gui)
-                  gui->AddLog(
-                      "[ERROR] Database failed to update server name for [" +
-                      std::to_string(serverId) + "]");
+                  
+                LogToFile("[ERROR] Database failed to update server name for [" + std::to_string(serverId) + "]");
               }
             } else {
               epyks::Packet notify;
               notify.type = epyks::PacketType::RENAME_SERVER;
               notify.data = "Permission denied. Must be owner.";
               SendTo(sock, notify);
-              if (gui)
-                gui->AddLog("[DENIED] User [" + username +
-                            "] is NOT owner of server [" +
-                            std::to_string(serverId) + "]");
+                
+              LogToFile("User [" + username + "] is NOT owner of server [" + std::to_string(serverId) + "]");
             }
           }
         } catch (...) {
-          if (gui)
-            gui->AddLog("[Error] Failed to process server rename");
+          
         }
       } else if (packet.type == epyks::PacketType::CREATE_CHANNEL) {
         epyks::CreateChannel req;
         auto bytes =
             std::vector<uint8_t>(packet.data.begin(), packet.data.end());
         if (req.Deserialize(bytes) && db) {
-          if (gui)
-            gui->AddLog("[DEBUG] User [" + username + "] creating channel [" +
-                        req.channel_name + "] in server [" +
-                        std::to_string(req.server_id) + "]");
+            LogToFile("User [" + username + "] creating channel [" + req.channel_name + "] in server [" + std::to_string(req.server_id) + "]");
           if (db->IsServerOwner(username, req.server_id)) {
             int channelId = db->CreateChannel(req.server_id, req.channel_name,
                                               req.type, req.category);
@@ -1183,24 +1175,16 @@ public:
               notify.type = epyks::PacketType::CREATE_CHANNEL;
               notify.data = "Channel created successfully";
               SendTo(sock, notify);
-              if (gui)
-                gui->AddLog("[SUCCESS] Channel [" + req.channel_name +
-                            "] created in server [" +
-                            std::to_string(req.server_id) + "]");
+                LogToFile("User [" + username + "] channel [" + req.channel_name + "] created in server [" + std::to_string(req.server_id) + "]");
             } else {
-              if (gui)
-                gui->AddLog("[ERROR] Database failed to create channel [" +
-                            req.channel_name + "]");
+              
             }
           } else {
             epyks::Packet notify;
             notify.type = epyks::PacketType::CREATE_CHANNEL;
             notify.data = "Permission denied. Must be owner.";
             SendTo(sock, notify);
-            if (gui)
-              gui->AddLog("[DENIED] User [" + username +
-                          "] is NOT owner of server [" +
-                          std::to_string(req.server_id) + "]");
+              LogToFile("User [" + username + "] is NOT owner of server [" + std::to_string(req.server_id) + "]");
           }
         }
       } else if (packet.type == epyks::PacketType::DELETE_CHANNEL) {
@@ -1214,8 +1198,7 @@ public:
             notify.type = epyks::PacketType::DELETE_CHANNEL;
             notify.data = "Channel deleted successfully";
             SendTo(sock, notify);
-            if (gui)
-              gui->AddLog("[" + username + "] deleted a channel");
+            
           } else {
             epyks::Packet notify;
             notify.type = epyks::PacketType::DELETE_CHANNEL;
@@ -1234,8 +1217,7 @@ public:
             notify.type = epyks::PacketType::EDIT_CHANNEL;
             notify.data = "Channel edited successfully";
             SendTo(sock, notify);
-            if (gui)
-              gui->AddLog("[" + username + "] edited a channel");
+            
           } else {
             epyks::Packet notify;
             notify.type = epyks::PacketType::EDIT_CHANNEL;
@@ -1284,8 +1266,7 @@ public:
                     if (c.socket == sock) SendTo(sock, notify); 
                 }
             }
-            if (gui)
-              gui->AddLog("[" + username + "] kicked " + req.target_username);
+            
           } else {
             epyks::Packet notify;
             notify.type = epyks::PacketType::KICK_USER;
@@ -1305,9 +1286,7 @@ public:
             notify.data = req.target_username +
                           (req.is_muted ? " was muted." : " was unmuted.");
             SendTo(sock, notify);
-            if (gui)
-              gui->AddLog("[" + username + "] muted/unmuted " +
-                          req.target_username);
+            
           } else {
             epyks::Packet notify;
             notify.type = epyks::PacketType::MUTE_USER;
@@ -1338,9 +1317,8 @@ public:
                 break;
               }
             }
-            if (gui)
-              gui->AddLog("[" + username + "] joined voice channel " +
-                          std::to_string(req.channel_id));
+            AddToVoiceMap(req.channel_id, sock);
+            LogToFile("User [" + username + "] joined voice channel [" + std::to_string(req.channel_id) + "]");
           }
         }
       } else if (packet.type == epyks::PacketType::LEAVE_VOICE) {
@@ -1348,6 +1326,12 @@ public:
         auto bytes =
             std::vector<uint8_t>(packet.data.begin(), packet.data.end());
         if (req.Deserialize(bytes)) {
+          {
+            std::lock_guard<std::mutex> lock(mapsMutex);
+            for (auto& [vid, list] : voiceOnlineClients) {
+                list.erase(std::remove(list.begin(), list.end(), sock), list.end());
+            }
+          }
           std::lock_guard<std::mutex> lock(clientsMutex);
           for (auto &c : clients) {
             if (c.socket == sock) {
@@ -1357,25 +1341,56 @@ public:
               break;
             }
           }
-          if (gui)
-            gui->AddLog("[" + username + "] left voice channel");
+          
         }
       }
     }
 
     if (!username.empty()) {
-      if (gui)
-        gui->AddLog("[" + username + "] left the chat");
+      std::cout << "[" << username << "] left the chat" << std::endl;
       LogToFile("[" + username + "] left the chat");
       epyks::Packet leaveMsg;
       leaveMsg.type = epyks::PacketType::JOIN_LEAVE;
       leaveMsg.data = username + " left the chat";
       Broadcast(leaveMsg, sock);
+      BroadcastPresence(username, false);
     }
-    RemoveClient(sock);
+    RemoveClient(sock, username);
   }
 
-  void RemoveClient(SOCKET sock) {
+  void BroadcastPresence(const std::string& username, bool online) {
+    auto servers = db->GetUserServers(username);
+    epyks::Packet notify;
+    notify.type = epyks::PacketType::ONLINE_STATUS;
+    notify.data = username + (online ? ":1" : ":0");
+    
+    std::lock_guard<std::mutex> lock(mapsMutex);
+    for (auto& s : servers) {
+        int sid = std::get<0>(s);
+        auto it = serverOnlineClients.find(sid);
+        if (it != serverOnlineClients.end()) {
+            for (SOCKET target : it->second) {
+                if (usernameToSocket[username] != target) {
+                    SendTo(target, notify);
+                }
+            }
+        }
+    }
+  }
+
+  void RemoveClient(SOCKET sock, const std::string& username) {
+    {
+        std::lock_guard<std::mutex> lock(mapsMutex);
+        if (!username.empty()) usernameToSocket.erase(username);
+        for (auto& pair : serverOnlineClients) {
+            auto& list = pair.second;
+            list.erase(std::remove(list.begin(), list.end(), sock), list.end());
+        }
+        for (auto& pair : voiceOnlineClients) {
+            auto& list = pair.second;
+            list.erase(std::remove(list.begin(), list.end(), sock), list.end());
+        }
+    }
     std::lock_guard<std::mutex> lock(clientsMutex);
     clients.erase(
         std::remove_if(clients.begin(), clients.end(),

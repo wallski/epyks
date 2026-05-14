@@ -20,6 +20,7 @@ struct AudioDeviceInfo {
     bool isDefault;
 };
 
+namespace epyks_winui {
 class AudioClient {
 public:
     AudioClient();
@@ -86,9 +87,9 @@ private:
     std::atomic<bool> m_isDeafened{false};
 
     std::atomic<bool> m_vadAuto{true};
-    std::atomic<float> m_vadThreshold{0.05f};
+    std::atomic<float> m_vadThreshold{0.02f};
     std::atomic<float> m_currentLevel{0.0f};
-    std::atomic<float> m_noiseFloor{0.02f};
+    std::atomic<float> m_noiseFloor{0.01f};
 
     // Buffer for outgoing encoded packets
     std::mutex m_outMutex;
@@ -105,3 +106,4 @@ private:
     static const int MAX_PACKET_SIZE = 4000;
     static const int RNNOISE_FRAME = 480; // RNNoise requires 10ms frames at 48kHz
 };
+} // namespace epyks_winui

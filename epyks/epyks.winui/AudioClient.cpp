@@ -13,6 +13,7 @@
 // RNNoise public API — the implementation is compiled via rnnoise_amalgam.c
 #include "../../deps/rnnoise/rnnoise.h"
 
+namespace epyks_winui {
 static void AudioLog(const std::string& msg) {
     // Debug logging disabled
     return;
@@ -388,3 +389,4 @@ void AudioClient::ProcessAudio(void* pOutput, const void* pInput, unsigned int f
         }
     }
 }
+} // namespace epyks_winui

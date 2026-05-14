@@ -279,6 +279,7 @@ namespace epyks {
     struct ProfileUpdate {
         std::string bio;
         std::string pfp_url;
+        std::string display_name;  // optional display name update
         std::vector<uint8_t> Serialize() const;
         bool Deserialize(const std::vector<uint8_t>& bytes);
     };
@@ -354,4 +355,20 @@ namespace epyks {
         std::vector<uint8_t> Serialize() const;
         bool Deserialize(const std::vector<uint8_t>& bytes);
     };
+
+    struct RenameServer {
+        int server_id;
+        std::string new_name;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
+    struct GetProfile {
+        std::string username;
+        std::vector<uint8_t> Serialize() const;
+        bool Deserialize(const std::vector<uint8_t>& bytes);
+    };
+
+    // Alias so EpyksClient.cpp can use epyks::TokenLogin
+    using TokenLogin = TokenLoginRequest;
 }

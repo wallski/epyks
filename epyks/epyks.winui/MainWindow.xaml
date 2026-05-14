@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="epyks_winui.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:epyks_winui"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="Epyks">
+
+    <Grid Background="{StaticResource EpyksBgBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Custom Title Bar -->
+        <Grid x:Name="AppTitleBar"
+              Grid.Row="0"
+              Height="32"
+              Background="#111214">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                <Ellipse Width="14" Height="14" Fill="{StaticResource EpyksAccentBrush}" Margin="0,0,6,0" />
+                <TextBlock Text="epyks"
+                           FontSize="12"
+                           FontWeight="Bold"
+                           Foreground="{StaticResource EpyksTextPrimaryBrush}"
+                           VerticalAlignment="Center" />
+            </StackPanel>
+        </Grid>
+
+        <!-- Root Navigation Frame -->
+        <Frame x:Name="RootFrame"
+               Grid.Row="1"
+               Background="{StaticResource EpyksBgBrush}" />
+    </Grid>
+</Window>

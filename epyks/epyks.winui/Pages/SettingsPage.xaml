@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="epyks_winui.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:epyks_winui"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Background="{StaticResource EpyksBgBrush}"
+    KeyDown="Page_KeyDown">
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <!-- Left settings nav -->
+            <ColumnDefinition Width="240"/>
+            <!-- Right content -->
+            <ColumnDefinition Width="*"/>
+            <!-- Close spacer -->
+            <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- Left nav panel -->
+        <Border Grid.Column="0" Background="{StaticResource EpyksSidebarBrush}" Padding="16,20,8,20">
+            <StackPanel Spacing="2">
+                <TextBlock Text="USER SETTINGS"
+                           FontSize="11" FontWeight="SemiBold"
+                           Foreground="{StaticResource EpyksTextMutedBrush}"
+                           CharacterSpacing="100"
+                           Margin="0,0,0,8"/>
+
+                <Button x:Name="AccountTabBtn" Content="My Account"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Left"
+                        Background="{StaticResource EpyksChannelActiveBrush}"
+                        BorderThickness="0" Padding="8,6" CornerRadius="4"
+                        Click="AccountTabBtn_Click"/>
+                <Button x:Name="VoiceTabBtn" Content="Voice &amp; Video"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Left"
+                        Background="Transparent"
+                        BorderThickness="0" Padding="8,6" CornerRadius="4"
+                        Click="VoiceTabBtn_Click"/>
+                <Button x:Name="AppearanceTabBtn" Content="Appearance"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Left"
+                        Background="Transparent"
+                        BorderThickness="0" Padding="8,6" CornerRadius="4"
+                        Click="AppearanceTabBtn_Click"/>
+
+                <Border Height="1" Background="{StaticResource EpyksDividerBrush}" Margin="0,12"/>
+
+                <TextBlock Text="OTHER"
+                           FontSize="11" FontWeight="SemiBold"
+                           Foreground="{StaticResource EpyksTextMutedBrush}"
+                           CharacterSpacing="100"
+                           Margin="0,0,0,8"/>
+
+                <Button Content="Log Out"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Left"
+                        Foreground="#F23F43"
+                        Background="Transparent"
+                        BorderThickness="0" Padding="8,6" CornerRadius="4"
+                        Click="LogOutBtn_Click"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Content panel -->
+        <ScrollViewer Grid.Column="1" Padding="40,32">
+            <StackPanel x:Name="SettingsContent" Spacing="20" MaxWidth="660"/>
+        </ScrollViewer>
+
+        <!-- ESC close button -->
+        <StackPanel Grid.Column="2" Margin="0,20,24,0">
+            <Button Content="✕" Background="Transparent" BorderThickness="0"
+                    FontSize="20" Foreground="{StaticResource EpyksTextMutedBrush}"
+                    ToolTipService.ToolTip="Close (ESC)"
+                    Click="CloseBtn_Click"/>
+            <TextBlock Text="ESC" FontSize="10"
+                       Foreground="{StaticResource EpyksTextMutedBrush}"
+                       HorizontalAlignment="Center"/>
+        </StackPanel>
+    </Grid>
+</Page>
