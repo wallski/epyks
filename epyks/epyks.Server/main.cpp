@@ -495,6 +495,7 @@ public:
               int serverId = std::stoi(sidStr);
               int channelId = std::stoi(cidStr);
               auto history = db->GetServerMessages(serverId, channelId, 100);
+              std::reverse(history.begin(), history.end());
               for (auto &msg : history) {
                 epyks::ServerMessage sm;
                 sm.server_id = serverId;
@@ -514,6 +515,7 @@ public:
           } else if (packet.data.find("DM:") == 0 && db) {
             std::string target = packet.data.substr(3);
             auto history = db->GetPrivateMessages(username, target, 100);
+            std::reverse(history.begin(), history.end());
             for (auto &msg : history) {
               epyks::PrivateMessage pm;
               pm.target_username = target;
@@ -1171,11 +1173,8 @@ public:
             int channelId = db->CreateChannel(req.server_id, req.channel_name,
                                               req.type, req.category);
             if (channelId != -1) {
-              epyks::Packet notify;
-              notify.type = epyks::PacketType::CREATE_CHANNEL;
-              notify.data = "Channel created successfully";
-              SendTo(sock, notify);
-                LogToFile("User [" + username + "] channel [" + req.channel_name + "] created in server [" + std::to_string(req.server_id) + "]");
+              BroadcastChannelList(req.server_id);
+              LogToFile("User [" + username + "] channel [" + req.channel_name + "] created in server [" + std::to_string(req.server_id) + "]");
             } else {
               
             }
@@ -1194,11 +1193,7 @@ public:
         if (req.Deserialize(bytes) && db) {
           if (db->IsServerOwner(username, req.server_id)) {
             db->DeleteChannel(req.channel_id);
-            epyks::Packet notify;
-            notify.type = epyks::PacketType::DELETE_CHANNEL;
-            notify.data = "Channel deleted successfully";
-            SendTo(sock, notify);
-            
+            BroadcastChannelList(req.server_id);
           } else {
             epyks::Packet notify;
             notify.type = epyks::PacketType::DELETE_CHANNEL;
@@ -1213,11 +1208,7 @@ public:
         if (req.Deserialize(bytes) && db) {
           if (db->IsServerOwner(username, req.server_id)) {
             db->EditChannel(req.channel_id, req.name, req.type, req.category);
-            epyks::Packet notify;
-            notify.type = epyks::PacketType::EDIT_CHANNEL;
-            notify.data = "Channel edited successfully";
-            SendTo(sock, notify);
-            
+            BroadcastChannelList(req.server_id);
           } else {
             epyks::Packet notify;
             notify.type = epyks::PacketType::EDIT_CHANNEL;
@@ -1377,6 +1368,34 @@ public:
         }
     }
   }
+
+  void BroadcastChannelList(int serverId) {
+    if (!db) return;
+    auto channels = db->GetChannels(serverId);
+    std::string data;
+    for (auto &ch : channels) {
+        data += std::to_string(std::get<0>(ch)) + "|" +
+                std::get<1>(ch) + "|" +
+                std::to_string(std::get<2>(ch)) + "|" +
+                std::get<3>(ch) + "\n";
+    }
+
+    epyks::Packet pkt;
+    pkt.type = epyks::PacketType::CHANNEL_LIST;
+    epyks::ChannelList cl;
+    cl.server_id = serverId;
+    cl.data = data;
+    auto bytes = cl.Serialize();
+    pkt.data = std::string(bytes.begin(), bytes.end());
+
+    std::lock_guard<std::mutex> lock(mapsMutex);
+    auto it = serverOnlineClients.find(serverId);
+    if (it != serverOnlineClients.end()) {
+        for (SOCKET s : it->second) {
+            SendTo(s, pkt);
+        }
+    }
+}
 
   void RemoveClient(SOCKET sock, const std::string& username) {
     {

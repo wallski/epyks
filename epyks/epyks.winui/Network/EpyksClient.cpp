@@ -199,6 +199,14 @@ namespace epyks_winui
         SendPacket(pkt);
     }
 
+    void EpyksClient::RequestPrivateHistory(const std::string& target)
+    {
+        epyks::Packet pkt;
+        pkt.type = epyks::PacketType::HISTORY;
+        pkt.data = "DM:" + target;
+        SendPacket(pkt);
+    }
+
     // ---------------------------------------------------------------
     // Friends
     // ---------------------------------------------------------------

@@ -102,6 +102,7 @@ namespace epyks_winui
         void EditMessage(int serverId, int channelId, uint64_t msgId, const std::string& newText);
         void DeleteMessage(int serverId, int channelId, uint64_t msgId);
         void RequestServerHistory(int serverId, int channelId);
+        void RequestPrivateHistory(const std::string& target);
 
         // --- Friends ---
         void SendFriendRequest(const std::string& target);

@@ -136,10 +136,10 @@ namespace winrt::epyks_winui::implementation
         changeBtn.Click([this](auto&&, auto&&) {
             [this]() -> winrt::fire_and_forget {
                 winrt::Windows::Storage::Pickers::FileOpenPicker picker;
+                auto& state = ::epyks_winui::GetAppState();
                 auto initWithWindow = picker.as<IInitializeWithWindow>();
-                if (initWithWindow) {
-                    HWND hwnd = ::epyks_winui::GetAppState().mainWindowHwnd;
-                    initWithWindow->Initialize(hwnd);
+                if (initWithWindow && state.mainWindowHwnd) {
+                    initWithWindow->Initialize(state.mainWindowHwnd);
                 }
                 picker.SuggestedStartLocation(winrt::Windows::Storage::Pickers::PickerLocationId::PicturesLibrary);
                 picker.FileTypeFilter().Append(L".png");

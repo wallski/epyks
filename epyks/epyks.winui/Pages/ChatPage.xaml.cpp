@@ -162,7 +162,18 @@ namespace winrt
     void ChatPage::RebuildMessageList()
     {
         auto& state = ::epyks_winui::GetAppState();
-        MessageList().Items().Clear();
+        
+        // Determine if we need to clear everything (channel change) or just append
+        bool channelChanged = (state.currentServerId != m_lastServerId || 
+                               state.currentChannelId != m_lastChannelId || 
+                               state.currentDM != m_lastDM);
+        
+        if (channelChanged || state.currentDM == "Friends") {
+            MessageList().Items().Clear();
+            m_lastServerId = state.currentServerId;
+            m_lastChannelId = state.currentChannelId;
+            m_lastDM = state.currentDM;
+        }
 
         std::vector<::epyks_winui::MsgModel>* msgs = nullptr;
         std::string chatTitle;
@@ -274,6 +285,11 @@ namespace winrt
                 auto it = state.dmChats.find(state.currentDM);
                 if (it != state.dmChats.end())
                     msgs = &it->second.messages;
+                
+                // Always request fresh history if we have no messages yet or just switched
+                if (!msgs || msgs->empty())
+                    ::epyks_winui::GetClient().RequestPrivateHistory(state.currentDM);
+
                 chatTitle = state.currentDM;
             }
         }
@@ -294,13 +310,24 @@ namespace winrt
             VoiceScreenPanel().Visibility(Visibility::Collapsed);
             MessageList().Visibility(Visibility::Visible);
             MessageInputPanel().Visibility(Visibility::Visible);
-            EmptyChatPlaceholder().Visibility((!msgs || msgs->empty()) ? Visibility::Visible : Visibility::Collapsed);
+            
+            bool showPlaceholder = (!msgs || msgs->empty()) && (state.currentDM != "Friends");
+            EmptyChatPlaceholder().Visibility(showPlaceholder ? Visibility::Visible : Visibility::Collapsed);
         }
 
         if (!msgs || msgs->empty()) return;
 
         std::string prevSender;
-        for (size_t i = 0; i < msgs->size(); i++)
+        uint32_t currentItemCount = MessageList().Items().Size();
+        
+        // If we are appending, we need to know who the last sender was to handle collapsing
+        if (currentItemCount > 0 && !channelChanged) {
+            if (msgs->size() >= currentItemCount) {
+                prevSender = (*msgs)[currentItemCount - 1].sender;
+            }
+        }
+
+        for (size_t i = currentItemCount; i < msgs->size(); i++)
         {
             auto& m = (*msgs)[i];
             bool collapsed = (m.sender == prevSender);
@@ -308,7 +335,9 @@ namespace winrt
             prevSender = m.sender;
         }
 
-        ScrollToBottom();
+        if (msgs->size() > currentItemCount) {
+            ScrollToBottom();
+        }
     }
 
     void ChatPage::RebuildMemberList()
@@ -896,18 +925,11 @@ namespace winrt
 
     void ChatPage::ScrollToBottom()
     {
-        // Scroll to end of ListView
-        auto sv = winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetChild(MessageList(), 0).try_as<ScrollViewer>();
-        if (!sv)
+        uint32_t count = MessageList().Items().Size();
+        if (count > 0)
         {
-            if (auto border = winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetChild(MessageList(), 0).try_as<Border>())
-            {
-                sv = winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetChild(border, 0).try_as<ScrollViewer>();
-            }
-        }
-        if (sv) {
-            MessageList().UpdateLayout();
-            sv.ScrollToVerticalOffset(sv.ScrollableHeight());
+            auto lastItem = MessageList().Items().GetAt(count - 1);
+            MessageList().ScrollIntoView(lastItem);
         }
     }
 
@@ -1568,8 +1590,14 @@ namespace winrt
         if (hWnd == 0) co_return; // Safety check
 
         winrt::Windows::Storage::Pickers::FileOpenPicker picker;
-        // Initialize with the window handle (required for packaged apps)
-        picker.as<IInitializeWithWindow>()->Initialize(hWnd);
+        // Initialize with the window handle (required for WinUI 3)
+        auto initWithWindow = picker.as<IInitializeWithWindow>();
+        HWND targetHwnd = state.mainWindowHwnd;
+        if (!targetHwnd) targetHwnd = GetActiveWindow();
+
+        if (initWithWindow && targetHwnd) {
+            initWithWindow->Initialize(targetHwnd);
+        }
 
         picker.ViewMode(winrt::Windows::Storage::Pickers::PickerViewMode::Thumbnail);
         picker.SuggestedStartLocation(winrt::Windows::Storage::Pickers::PickerLocationId::PicturesLibrary);

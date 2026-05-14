@@ -161,7 +161,9 @@ namespace epyks_winui
             dispatcher.TryEnqueue([=]() {
                 auto& s = GetAppState();
                 if (from.find("wants to add you") != std::string::npos) return;
-                s.friendRequests.push_back(from);
+                // Prevent duplicates
+                if (std::find(s.friendRequests.begin(), s.friendRequests.end(), from) == s.friendRequests.end())
+                    s.friendRequests.push_back(from);
                 s.FireChanged();
             });
         };
@@ -175,11 +177,21 @@ namespace epyks_winui
                 {
                     if (s.servers.count(id))
                     {
-                        srv.channels       = s.servers[id].channels;
+                        // Preserve channels and messages
+                        srv.channels = s.servers[id].channels;
                         srv.channelMessages = s.servers[id].channelMessages;
                     }
+                    s.servers[id] = srv; // Merge/Update
                 }
-                s.servers = servers;
+                
+                // Cleanup: remove servers that are no longer in the list
+                for (auto it = s.servers.begin(); it != s.servers.end(); ) {
+                    if (servers.find(it->first) == servers.end()) {
+                        it = s.servers.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
                 s.FireChanged();
             });
         };

@@ -40,6 +40,9 @@ namespace winrt::epyks_winui::implementation
         uint64_t m_replyToId = 0;
         std::string m_replyToUser;
         Microsoft::UI::Xaml::DispatcherTimer m_voiceTimer{ nullptr };
+        int m_lastServerId = -2;
+        int m_lastChannelId = -2;
+        std::string m_lastDM;
 
         void RebuildServerRail();
         void RebuildChannelList();
